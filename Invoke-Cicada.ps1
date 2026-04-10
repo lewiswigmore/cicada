@@ -103,8 +103,16 @@ conn.close()
 
 # --- Validation ---
 
-if (-not (Get-Command wt -ErrorAction SilentlyContinue)) {
-    Write-Error "Windows Terminal (wt.exe) not found. Install: winget install Microsoft.WindowsTerminal"
+# Resolve Windows Terminal executable
+$wtExe = $null
+$wtCmd = Get-Command wt -ErrorAction SilentlyContinue
+if ($wtCmd) {
+    $wtExe = 'wt'
+} elseif (Test-Path "$env:LOCALAPPDATA\Microsoft\WindowsApps\wt.exe") {
+    $wtExe = "$env:LOCALAPPDATA\Microsoft\WindowsApps\wt.exe"
+}
+if (-not $wtExe) {
+    Write-Error "Windows Terminal (wt.exe) not found. Download from: https://aka.ms/terminal"
     return
 }
 
@@ -246,7 +254,20 @@ $sessionGuid = if ($saved -and $saved.sessionGuid) { [string]$saved.sessionGuid 
 
 $mcpEnabled = $false
 if (-not $NoMcp) {
-    $pythonCmd = Get-Command python -ErrorAction SilentlyContinue
+    # Resolve python command (try python, then python3; skip Store shim)
+    $pythonCmd = $null
+    $tryPython = Get-Command python -ErrorAction SilentlyContinue
+    if ($tryPython) {
+        $testVer = (python --version 2>&1)
+        if ($LASTEXITCODE -eq 0 -and $testVer -match 'Python \d') { $pythonCmd = $tryPython }
+    }
+    if (-not $pythonCmd) {
+        $tryPython3 = Get-Command python3 -ErrorAction SilentlyContinue
+        if ($tryPython3) {
+            $testVer = (python3 --version 2>&1)
+            if ($LASTEXITCODE -eq 0 -and $testVer -match 'Python \d') { $pythonCmd = $tryPython3 }
+        }
+    }
     if ($pythonCmd) {
         $agentsList = ($paneConfigs | ForEach-Object { $_.Alias }) -join ','
 
@@ -255,7 +276,7 @@ if (-not $NoMcp) {
         if (-not (Test-Path $cicadaDir)) { New-Item $cicadaDir -ItemType Directory -Force | Out-Null }
 
         # Initialize team in cicada.db via Python MCP package
-        $initResult = & python -m cicada_mcp init --team-id $sessionGuid --work-dir $wd --agents $agentsList --db $cicadaDb 2>&1
+        $initResult = & $pythonCmd.Source -m cicada_mcp init --team-id $sessionGuid --work-dir $wd --agents $agentsList --db $cicadaDb 2>&1
         if ($LASTEXITCODE -eq 0) {
             Write-Host "  $initResult" -ForegroundColor DarkGray
 
@@ -350,71 +371,66 @@ function NextAgentPane {
 
 # --- Build wt argument string ---
 # Adaptive layout for 1-6 agents with optional monitor column on the right.
-# WT split-pane -s is the fraction of the CURRENT pane given to the NEW pane.
-# Strategy: create monitor column first (if enabled), then lay out agent grid.
+# Uses -t (target pane ID) for deterministic splits — no move-focus needed.
+# Pane IDs: 0 = first agent (initial), then increment with each split-pane.
 
 $wtNewWindow = "-w new"
 
-# First agent fills the initial pane
+# First agent fills the initial pane (pane 0)
 $wt = "$wtNewWindow --maximized $(NextAgentPane)"
+$nextId = 1
 
-# Add monitor column on right (20% width)
+# Add monitor column on right (20% width) — splits off pane 0
 if (-not $NoMonitor) {
     $monitorScript = "$PSScriptRoot\Watch-Sessions.ps1"
     $monArgs = "--tabColor `"#475569`" --title `"Monitor`" -d `"$wd`""
     if (Test-Path $monitorScript) {
         $monArgs += " pwsh -NoExit -File `"$monitorScript`" -StateFile `"$stateFile`""
     }
-    $wt += " ; split-pane -V -s 0.2 $monArgs"
-    $wt += " ; move-focus left"
+    $wt += " ; split-pane -t 0 -V -s 0.2 $monArgs"
+    $nextId++  # monitor = pane 1
 }
 
-# Layout based on agent count (agent 0 already placed)
+# Layout agents using targeted splits (agent 0 already in pane 0)
 switch ($Panes) {
     1 {
         # Single agent — nothing more to do
     }
     2 {
         # Side by side: [Ag0 | Ag1]
-        $wt += " ; split-pane -V -s 0.5 $(NextAgentPane)"
+        $wt += " ; split-pane -t 0 -V -s 0.5 $(NextAgentPane)"
     }
     3 {
         # 3 equal columns: [Ag0 | Ag1 | Ag2]
-        # split-V 0.67: Ag0 keeps 33%, new pane gets 67%
-        # split-V 0.5 on that 67%: Ag1 33%, Ag2 33%
-        $wt += " ; split-pane -V -s 0.67 $(NextAgentPane)"
-        $wt += " ; split-pane -V -s 0.5 $(NextAgentPane)"
+        $a1 = $nextId; $nextId++
+        $wt += " ; split-pane -t 0 -V -s 0.67 $(NextAgentPane)"
+        $wt += " ; split-pane -t $a1 -V -s 0.5 $(NextAgentPane)"
     }
     4 {
-        # 2×2 grid: [Ag0 | Ag1] / [Ag2 | Ag3]
-        $wt += " ; split-pane -V -s 0.5 $(NextAgentPane)"
-        $wt += " ; move-focus left"
-        $wt += " ; split-pane -H -s 0.5 $(NextAgentPane)"
-        $wt += " ; move-focus right"
-        $wt += " ; split-pane -H -s 0.5 $(NextAgentPane)"
+        # 2x2 grid: [Ag0 | Ag1] / [Ag2 | Ag3]
+        $a1 = $nextId; $nextId++
+        $wt += " ; split-pane -t 0 -V -s 0.5 $(NextAgentPane)"
+        $wt += " ; split-pane -t 0 -H -s 0.5 $(NextAgentPane)"
+        $wt += " ; split-pane -t $a1 -H -s 0.5 $(NextAgentPane)"
     }
     5 {
-        # 3 top + 2 bottom: [Ag0 | Ag1 | Ag2] / [Ag3 | Ag4 | ---]
-        # Build 3 columns, then split the left 2 horizontally
-        $wt += " ; split-pane -V -s 0.67 $(NextAgentPane)"   # Ag1 (focus on Ag1)
-        $wt += " ; split-pane -V -s 0.5 $(NextAgentPane)"    # Ag2 (focus on Ag2)
-        $wt += " ; move-focus left"                           # → Ag1
-        $wt += " ; move-focus left"                           # → Ag0
-        $wt += " ; split-pane -H -s 0.5 $(NextAgentPane)"    # Ag3 below Ag0
-        $wt += " ; move-focus right"                          # → Ag1
-        $wt += " ; split-pane -H -s 0.5 $(NextAgentPane)"    # Ag4 below Ag1
+        # 3 top + 2 bottom: [Ag0 | Ag1 | Ag2] / [Ag3 | Ag4]
+        $a1 = $nextId; $nextId++
+        $wt += " ; split-pane -t 0 -V -s 0.67 $(NextAgentPane)"
+        $a2 = $nextId; $nextId++
+        $wt += " ; split-pane -t $a1 -V -s 0.5 $(NextAgentPane)"
+        $wt += " ; split-pane -t 0 -H -s 0.5 $(NextAgentPane)"
+        $wt += " ; split-pane -t $a1 -H -s 0.5 $(NextAgentPane)"
     }
     6 {
-        # 3×2 grid: [Ag0 | Ag1 | Ag2] / [Ag3 | Ag4 | Ag5]
-        $wt += " ; split-pane -V -s 0.67 $(NextAgentPane)"   # Ag1
-        $wt += " ; split-pane -V -s 0.5 $(NextAgentPane)"    # Ag2
-        $wt += " ; move-focus left"                           # → Ag1
-        $wt += " ; move-focus left"                           # → Ag0
-        $wt += " ; split-pane -H -s 0.5 $(NextAgentPane)"    # Ag3
-        $wt += " ; move-focus right"                          # → Ag1
-        $wt += " ; split-pane -H -s 0.5 $(NextAgentPane)"    # Ag4
-        $wt += " ; move-focus right"                          # → Ag2
-        $wt += " ; split-pane -H -s 0.5 $(NextAgentPane)"    # Ag5
+        # 3x2 grid: [Ag0 | Ag1 | Ag2] / [Ag3 | Ag4 | Ag5]
+        $a1 = $nextId; $nextId++
+        $wt += " ; split-pane -t 0 -V -s 0.67 $(NextAgentPane)"
+        $a2 = $nextId; $nextId++
+        $wt += " ; split-pane -t $a1 -V -s 0.5 $(NextAgentPane)"
+        $wt += " ; split-pane -t 0 -H -s 0.5 $(NextAgentPane)"
+        $wt += " ; split-pane -t $a1 -H -s 0.5 $(NextAgentPane)"
+        $wt += " ; split-pane -t $a2 -H -s 0.5 $(NextAgentPane)"
     }
 }
 
@@ -430,7 +446,7 @@ if ($mcpEnabled) {
 Write-Verbose "wt $wt"
 
 # Launch WT in a dedicated window
-Start-Process wt -ArgumentList $wt
+Start-Process $wtExe -ArgumentList $wt
 
 # Mark state as running (no PID — WT launcher exits immediately, real process is WindowsTerminal.exe)
 $state.status = 'running'

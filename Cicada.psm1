@@ -37,8 +37,10 @@ function Show-CicadaHelp {
     Write-Host ""
     Write-Host "  Options:" -ForegroundColor White
     Write-Host "    -h, --help              Show this help message"
+    Write-Host "    -v, --version           Show version number"
     Write-Host "    --doctor                Run health checks on dependencies"
     Write-Host "    --update                Update a git install or show safe reinstall guidance"
+    Write-Host "    --uninstall             Remove Cicada module, MCP package, and config"
     Write-Host "    --resume, --continue    Relaunch the last Cicada session in place"
     Write-Host "    --clear                 Delete Cicada session data and reset state"
     Write-Host "    --no-monitor            Launch without the sidebar monitor"
@@ -94,12 +96,32 @@ function Show-CicadaDoctor {
         $warnings++
     }
 
-    # Check Windows Terminal
-    $wtCmd = Get-Command wt -ErrorAction SilentlyContinue
-    if ($wtCmd) {
-        Write-Host "  [OK] wt.exe" -ForegroundColor Green
+    # Check Windows Terminal — multiple detection methods
+    $wtFound = $false
+    # 1. On PATH
+    if (Get-Command wt -ErrorAction SilentlyContinue) { $wtFound = $true }
+    # 2. Store install location
+    if (-not $wtFound -and (Test-Path "$env:LOCALAPPDATA\Microsoft\WindowsApps\wt.exe")) { $wtFound = $true }
+    # 3. WT_SESSION env var (set when running inside Windows Terminal)
+    if (-not $wtFound -and $env:WT_SESSION) { $wtFound = $true }
+    # 4. WindowsTerminal process is running
+    if (-not $wtFound -and (Get-Process -Name WindowsTerminal -ErrorAction SilentlyContinue)) { $wtFound = $true }
+    # 5. Check via App Package (Store/MSIX install)
+    if (-not $wtFound) {
+        try {
+            $pkg = Get-AppxPackage -Name 'Microsoft.WindowsTerminal*' -ErrorAction SilentlyContinue
+            if ($pkg) { $wtFound = $true }
+        } catch {}
+    }
+    if ($wtFound) {
+        Write-Host "  [OK] Windows Terminal" -ForegroundColor Green
     } else {
-        Write-Host "  [!!] wt.exe not found — install: winget install Microsoft.WindowsTerminal" -ForegroundColor Red
+        $hasWinget = Get-Command winget -ErrorAction SilentlyContinue
+        if ($hasWinget) {
+            Write-Host "  [!!] wt.exe not found — install: winget install Microsoft.WindowsTerminal" -ForegroundColor Red
+        } else {
+            Write-Host "  [!!] wt.exe not found — download from: https://aka.ms/terminal" -ForegroundColor Red
+        }
         $allGood = $false
     }
 
@@ -113,14 +135,31 @@ function Show-CicadaDoctor {
             Write-Host "  [OK] copilot" -ForegroundColor Green
         }
     } else {
-        Write-Host "  [!!] copilot not found — install: winget install GitHub.CopilotCLI" -ForegroundColor Red
+        $hasWinget = Get-Command winget -ErrorAction SilentlyContinue
+        if ($hasWinget) {
+            Write-Host "  [!!] copilot not found — install: winget install GitHub.CopilotCLI" -ForegroundColor Red
+        } else {
+            Write-Host "  [!!] copilot not found — download from: https://github.com/github/gh-copilot" -ForegroundColor Red
+        }
         $allGood = $false
     }
 
-    # Check Python
+    # Check Python (try python, then python3; detect Store shim)
+    $pythonExe = $null
     $pythonCmd = Get-Command python -ErrorAction SilentlyContinue
     if ($pythonCmd) {
-        $pyVer = (python --version 2>&1) -replace 'Python\s*', ''
+        $testVer = (python --version 2>&1)
+        if ($LASTEXITCODE -eq 0 -and $testVer -match 'Python \d') { $pythonExe = 'python' }
+    }
+    if (-not $pythonExe) {
+        $python3Cmd = Get-Command python3 -ErrorAction SilentlyContinue
+        if ($python3Cmd) {
+            $testVer = (python3 --version 2>&1)
+            if ($LASTEXITCODE -eq 0 -and $testVer -match 'Python \d') { $pythonExe = 'python3' }
+        }
+    }
+    if ($pythonExe) {
+        $pyVer = (& $pythonExe --version 2>&1) -replace 'Python\s*', ''
         $pyMajor = 0; $pyMinor = 0
         if ($pyVer -match '^(\d+)\.(\d+)') { $pyMajor = [int]$Matches[1]; $pyMinor = [int]$Matches[2] }
         if ($pyMajor -ge 3 -and $pyMinor -ge 10) {
@@ -135,19 +174,21 @@ function Show-CicadaDoctor {
     }
 
     # Check mcp package
-    if ($pythonCmd) {
-        $mcpCheck = python -c "import cicada_mcp; print(cicada_mcp.__version__)" 2>&1
-        if ($LASTEXITCODE -eq 0) {
-            Write-Host "  [OK] cicada-mcp $mcpCheck" -ForegroundColor Green
+    if ($pythonExe) {
+        $mcpCheck = & $pythonExe -c "import cicada_mcp; print(cicada_mcp.__version__)" 2>$null
+        if ($LASTEXITCODE -eq 0 -and $mcpCheck) {
+            $mcpVer = ($mcpCheck | Select-Object -Last 1).Trim()
+            Write-Host "  [OK] cicada-mcp $mcpVer" -ForegroundColor Green
         } else {
-            Write-Host "  [--] cicada-mcp not installed — run: pip install -e ." -ForegroundColor Yellow
+            $modPath = (Get-Module Cicada -ListAvailable | Select-Object -First 1).ModuleBase
+            Write-Host "  [--] cicada-mcp not installed — run: $pythonExe -m pip install `"$modPath`"" -ForegroundColor Yellow
             $warnings++
         }
     }
 
     # Check MCP server can start (catches import errors, SDK conflicts)
-    if ($pythonCmd -and $LASTEXITCODE -eq 0) {
-        $serverCheck = python -c "from cicada_mcp.server import mcp" 2>&1
+    if ($pythonExe -and $LASTEXITCODE -eq 0) {
+        $serverCheck = & $pythonExe -c "from cicada_mcp.server import mcp" 2>$null
         if ($LASTEXITCODE -eq 0) {
             Write-Host "  [OK] MCP server importable" -ForegroundColor Green
         } else {
@@ -217,6 +258,92 @@ function Show-CicadaDoctor {
     Write-Host ""
 }
 
+function Show-CicadaVersion {
+    $v = (Import-PowerShellDataFile "$PSScriptRoot\Cicada.psd1").ModuleVersion
+    Write-Host "cicada v$v"
+}
+
+function Uninstall-Cicada {
+    Write-Host ""
+    Write-Host "  Cicada Uninstall" -ForegroundColor Cyan
+    Write-Host ""
+
+    # 1. Uninstall cicada-mcp Python package
+    $pythonExe = $null
+    if (Get-Command python -ErrorAction SilentlyContinue) {
+        $testVer = (python --version 2>&1)
+        if ($LASTEXITCODE -eq 0 -and $testVer -match 'Python \d') { $pythonExe = 'python' }
+    }
+    if (-not $pythonExe -and (Get-Command python3 -ErrorAction SilentlyContinue)) {
+        $testVer = (python3 --version 2>&1)
+        if ($LASTEXITCODE -eq 0 -and $testVer -match 'Python \d') { $pythonExe = 'python3' }
+    }
+    if ($pythonExe) {
+        Write-Host "  Removing cicada-mcp Python package..." -ForegroundColor DarkGray
+        & $pythonExe -m pip uninstall cicada-mcp -y 2>&1 | Out-Null
+        if ($LASTEXITCODE -eq 0) {
+            Write-Host "  [OK] cicada-mcp uninstalled" -ForegroundColor Green
+        } else {
+            Write-Host "  [--] cicada-mcp was not installed" -ForegroundColor DarkGray
+        }
+    }
+
+    # 2. Remove cicada.cmd shim and PATH entry (before removing ~/.cicada)
+    $shimDir = "$HOME\.cicada\bin"
+    $shimPath = "$shimDir\cicada.cmd"
+    if (Test-Path $shimPath) {
+        Remove-Item $shimPath -Force -ErrorAction SilentlyContinue
+        Write-Host "  [OK] Removed cicada.cmd shim" -ForegroundColor Green
+    }
+    $userPath = [Environment]::GetEnvironmentVariable('Path', 'User')
+    if ($userPath -and $userPath -split ';' -contains $shimDir) {
+        $newPath = ($userPath -split ';' | Where-Object { $_ -ne $shimDir }) -join ';'
+        [Environment]::SetEnvironmentVariable('Path', $newPath, 'User')
+        Write-Host "  [OK] Removed $shimDir from user PATH" -ForegroundColor Green
+    }
+
+    # 3. Remove ~/.cicada/ config directory
+    $cicadaDir = "$HOME\.cicada"
+    if (Test-Path $cicadaDir) {
+        Remove-Item $cicadaDir -Recurse -Force -ErrorAction SilentlyContinue
+        Write-Host "  [OK] Removed $cicadaDir" -ForegroundColor Green
+    }
+
+    # 4. Remove cicada state
+    $stateFile = "$HOME\.copilot\cicada-state.json"
+    if (Test-Path $stateFile) {
+        Remove-Item $stateFile -Force -ErrorAction SilentlyContinue
+        Write-Host "  [OK] Removed cicada state" -ForegroundColor Green
+    }
+
+    # 5. Remove Import-Module Cicada from $PROFILE
+    if (Test-Path $PROFILE) {
+        $profileContent = Get-Content $PROFILE -Raw -ErrorAction SilentlyContinue
+        if ($profileContent -and $profileContent -match 'Import-Module\s+Cicada') {
+            $cleaned = ($profileContent -split "`n" | Where-Object { $_ -notmatch 'Import-Module\s+Cicada' }) -join "`n"
+            Set-Content -Path $PROFILE -Value $cleaned.TrimEnd() -Encoding UTF8
+            Write-Host "  [OK] Removed Import-Module Cicada from `$PROFILE" -ForegroundColor Green
+        }
+    }
+
+    # 6. Remove PowerShell module (this file's parent)
+    $modulePath = $PSScriptRoot
+    Write-Host "  [OK] Removing module from $modulePath" -ForegroundColor Green
+    Write-Host ""
+    Write-Host "  Cicada has been uninstalled." -ForegroundColor Green
+    Write-Host ""
+
+    # Remove the module from the current session
+    Remove-Module Cicada -Force -ErrorAction SilentlyContinue
+
+    # Schedule self-deletion (can't delete while loaded)
+    Start-Job -ScriptBlock {
+        param($p)
+        Start-Sleep -Seconds 2
+        Remove-Item $p -Recurse -Force -ErrorAction SilentlyContinue
+    } -ArgumentList $modulePath | Out-Null
+}
+
 function Update-Cicada {
     Write-Host ""
     Write-Host "  Cicada Update" -ForegroundColor Cyan
@@ -279,12 +406,20 @@ function Invoke-Cicada {
         if ($lower -in '--help', '-h') {
             $showHelp = $true
         }
+        elseif ($lower -in '--version', '-v') {
+            Show-CicadaVersion
+            return
+        }
         elseif ($lower -eq '--doctor') {
             Show-CicadaDoctor
             return
         }
         elseif ($lower -eq '--update') {
             Update-Cicada
+            return
+        }
+        elseif ($lower -eq '--uninstall') {
+            Uninstall-Cicada
             return
         }
         elseif ($lower -in '--resume', '--continue') {
