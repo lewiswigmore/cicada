@@ -34,13 +34,16 @@ function Get-CicadaFunFact {
         'Cicadas are found on every continent except Antarctica.'
         'There are over 3,000 known species of cicada worldwide.'
         'Cicadas do not bite or sting — they are harmless to humans.'
-        'The name "cicada" comes from the Latin word for "tree cricket."'
+        'The word "cicada" comes directly from Latin, where Romans used it to describe the insect and its song.'
         'Cicadas vibrate drum-like organs called tymbals to produce their song.'
         'Some cicada broods have been tracked since the 1700s.'
         'Cicadas molt their exoskeleton and leave behind a perfect hollow shell.'
         'Ancient Greeks kept cicadas in cages to enjoy their song.'
         'Cicadas can fly up to 8 mph despite their clumsy appearance.'
         'A single cicada emergence can number in the billions.'
+        'Male cicadas are the singers — females are silent and respond by flicking their wings.'
+        'Cicadas feed exclusively on xylem sap from tree roots, essentially drinking diluted tree water.'
+        'After 17 years underground, adult cicadas live only 4 to 6 weeks above ground.'
     )
     return $facts[(Get-Random -Minimum 0 -Maximum $facts.Count)]
 }
