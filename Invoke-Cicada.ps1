@@ -371,66 +371,70 @@ function NextAgentPane {
 
 # --- Build wt argument string ---
 # Adaptive layout for 1-6 agents with optional monitor column on the right.
-# Uses -t (target pane ID) for deterministic splits — no move-focus needed.
-# Pane IDs: 0 = first agent (initial), then increment with each split-pane.
+# Uses move-focus to navigate between panes before splitting.
+# After each split-pane, the NEW pane receives focus.
 
 $wtNewWindow = "-w new"
 
 # First agent fills the initial pane (pane 0)
 $wt = "$wtNewWindow --maximized $(NextAgentPane)"
-$nextId = 1
 
-# Add monitor column on right (20% width) — splits off pane 0
+# Add monitor column on right (20% width) — splits off initial pane
 if (-not $NoMonitor) {
     $monitorScript = "$PSScriptRoot\Watch-Sessions.ps1"
     $monArgs = "--tabColor `"#475569`" --title `"Monitor`" -d `"$wd`""
     if (Test-Path $monitorScript) {
         $monArgs += " pwsh -NoExit -File `"$monitorScript`" -StateFile `"$stateFile`""
     }
-    $wt += " ; split-pane -t 0 -V -s 0.2 $monArgs"
-    $nextId++  # monitor = pane 1
+    $wt += " ; split-pane -V -s 0.2 $monArgs"
+    # Focus is now on Monitor — move back to Agent0
+    $wt += " ; move-focus left"
 }
 
-# Layout agents using targeted splits (agent 0 already in pane 0)
+# Layout remaining agents (Agent0 is focused, monitor is to the far right)
 switch ($Panes) {
     1 {
         # Single agent — nothing more to do
     }
     2 {
         # Side by side: [Ag0 | Ag1]
-        $wt += " ; split-pane -t 0 -V -s 0.5 $(NextAgentPane)"
+        $wt += " ; split-pane -V -s 0.5 $(NextAgentPane)"
     }
     3 {
-        # 3 equal columns: [Ag0 | Ag1 | Ag2]
-        $a1 = $nextId; $nextId++
-        $wt += " ; split-pane -t 0 -V -s 0.67 $(NextAgentPane)"
-        $wt += " ; split-pane -t $a1 -V -s 0.5 $(NextAgentPane)"
+        # 3 columns: [Ag0 | Ag1 | Ag2]
+        # Split Ag0 → Ag1 gets focus, split Ag1 → Ag2
+        $wt += " ; split-pane -V -s 0.67 $(NextAgentPane)"
+        $wt += " ; split-pane -V -s 0.5 $(NextAgentPane)"
     }
     4 {
         # 2x2 grid: [Ag0 | Ag1] / [Ag2 | Ag3]
-        $a1 = $nextId; $nextId++
-        $wt += " ; split-pane -t 0 -V -s 0.5 $(NextAgentPane)"
-        $wt += " ; split-pane -t 0 -H -s 0.5 $(NextAgentPane)"
-        $wt += " ; split-pane -t $a1 -H -s 0.5 $(NextAgentPane)"
+        $wt += " ; split-pane -V -s 0.5 $(NextAgentPane)"   # Ag1 right of Ag0, focus: Ag1
+        $wt += " ; move-focus left"                          # focus: Ag0
+        $wt += " ; split-pane -H -s 0.5 $(NextAgentPane)"   # Ag2 below Ag0, focus: Ag2
+        $wt += " ; move-focus right"                         # focus: Ag1
+        $wt += " ; split-pane -H -s 0.5 $(NextAgentPane)"   # Ag3 below Ag1
     }
     5 {
         # 3 top + 2 bottom: [Ag0 | Ag1 | Ag2] / [Ag3 | Ag4]
-        $a1 = $nextId; $nextId++
-        $wt += " ; split-pane -t 0 -V -s 0.67 $(NextAgentPane)"
-        $a2 = $nextId; $nextId++
-        $wt += " ; split-pane -t $a1 -V -s 0.5 $(NextAgentPane)"
-        $wt += " ; split-pane -t 0 -H -s 0.5 $(NextAgentPane)"
-        $wt += " ; split-pane -t $a1 -H -s 0.5 $(NextAgentPane)"
+        $wt += " ; split-pane -V -s 0.67 $(NextAgentPane)"  # Ag1, focus: Ag1
+        $wt += " ; split-pane -V -s 0.5 $(NextAgentPane)"   # Ag2, focus: Ag2
+        $wt += " ; move-focus left"                          # focus: Ag1
+        $wt += " ; move-focus left"                          # focus: Ag0
+        $wt += " ; split-pane -H -s 0.5 $(NextAgentPane)"   # Ag3 below Ag0, focus: Ag3
+        $wt += " ; move-focus right"                         # focus: Ag1
+        $wt += " ; split-pane -H -s 0.5 $(NextAgentPane)"   # Ag4 below Ag1
     }
     6 {
         # 3x2 grid: [Ag0 | Ag1 | Ag2] / [Ag3 | Ag4 | Ag5]
-        $a1 = $nextId; $nextId++
-        $wt += " ; split-pane -t 0 -V -s 0.67 $(NextAgentPane)"
-        $a2 = $nextId; $nextId++
-        $wt += " ; split-pane -t $a1 -V -s 0.5 $(NextAgentPane)"
-        $wt += " ; split-pane -t 0 -H -s 0.5 $(NextAgentPane)"
-        $wt += " ; split-pane -t $a1 -H -s 0.5 $(NextAgentPane)"
-        $wt += " ; split-pane -t $a2 -H -s 0.5 $(NextAgentPane)"
+        $wt += " ; split-pane -V -s 0.67 $(NextAgentPane)"  # Ag1, focus: Ag1
+        $wt += " ; split-pane -V -s 0.5 $(NextAgentPane)"   # Ag2, focus: Ag2
+        $wt += " ; move-focus left"                          # focus: Ag1
+        $wt += " ; move-focus left"                          # focus: Ag0
+        $wt += " ; split-pane -H -s 0.5 $(NextAgentPane)"   # Ag3 below Ag0, focus: Ag3
+        $wt += " ; move-focus right"                         # focus: Ag1
+        $wt += " ; split-pane -H -s 0.5 $(NextAgentPane)"   # Ag4 below Ag1, focus: Ag4
+        $wt += " ; move-focus right"                         # focus: Ag2
+        $wt += " ; split-pane -H -s 0.5 $(NextAgentPane)"   # Ag5 below Ag2
     }
 }
 
