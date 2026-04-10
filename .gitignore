@@ -1,0 +1,11 @@
+*.egg-info/
+__pycache__/
+*.pyc
+dist/
+build/
+*.egg
+.agents/
+AGENTS.md
+skills-lock.json
+.claude/
+security-results/

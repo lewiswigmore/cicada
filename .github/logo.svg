@@ -1,0 +1,30 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="260" height="200" viewBox="0 0 260 200">
+  <!-- Line 1: head -->
+  <text x="127.6" y="20" font-family="monospace" font-size="14" fill="#4ade80">▄█▄</text>
+  <!-- Line 2: prothorax -->
+  <text x="102.4" y="38" font-family="monospace" font-size="14" fill="#4ade80">▐██████▌</text>
+  <!-- Line 3: thorax + wings -->
+  <text x="43.6" y="56" font-family="monospace" font-size="14" fill="#22d3ee">░▒▓▒░</text>
+  <text x="94" y="56" font-family="monospace" font-size="14" fill="#4ade80">█████████</text>
+  <text x="178" y="56" font-family="monospace" font-size="14" fill="#22d3ee">░▒▓▒░</text>
+  <!-- Line 4: peak wings -->
+  <text x="26.8" y="74" font-family="monospace" font-size="14" fill="#22d3ee">░▒▓▓▒░</text>
+  <text x="94" y="74" font-family="monospace" font-size="14" fill="#4ade80">▐████████▌</text>
+  <text x="194.8" y="74" font-family="monospace" font-size="14" fill="#22d3ee">░▒▓▓▒░</text>
+  <!-- Line 5: wings taper -->
+  <text x="35.2" y="92" font-family="monospace" font-size="14" fill="#0e7490">░▒▓▒░</text>
+  <text x="102.4" y="92" font-family="monospace" font-size="14" fill="#4ade80">████████</text>
+  <text x="194.8" y="92" font-family="monospace" font-size="14" fill="#0e7490">░▒▓▒░</text>
+  <!-- Line 6: wings fade -->
+  <text x="60.4" y="110" font-family="monospace" font-size="14" fill="#0e7490">░▒▓</text>
+  <text x="110.8" y="110" font-family="monospace" font-size="14" fill="#4ade80">██████</text>
+  <text x="186.4" y="110" font-family="monospace" font-size="14" fill="#0e7490">▓▒░</text>
+  <!-- Line 7: abdomen -->
+  <text x="119.2" y="128" font-family="monospace" font-size="14" fill="#4ade80">████</text>
+  <!-- Line 8: tail -->
+  <text x="119.2" y="146" font-family="monospace" font-size="14" fill="#4ade80">▐██▌</text>
+  <!-- Line 9: tip -->
+  <text x="127.6" y="164" font-family="monospace" font-size="14" fill="#4ade80">▐▌</text>
+  <!-- Line 10: end -->
+  <text x="136" y="182" font-family="monospace" font-size="14" fill="#4ade80">▀</text>
+</svg>

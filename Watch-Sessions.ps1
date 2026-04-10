@@ -1,0 +1,488 @@
+# Watch-Sessions.ps1 — Live conversation monitor for Cicada
+# Sidebar panel: team status, per-agent conversation context, activity feed
+[CmdletBinding()]
+param(
+    [string]$StateFile = "$HOME\.copilot\cicada-state.json",
+    [int]$Interval = 5
+)
+
+$sessionDir = "$HOME\.copilot\session-state"
+
+# ── Python helper: batch-queries session-store.db in one process call ──
+$queryScript = @'
+import sqlite3, sys, json, os
+db_path = os.path.expanduser("~/.copilot/session-store.db")
+if not os.path.exists(db_path):
+    print(json.dumps([]))
+    sys.exit(0)
+try:
+    spec = json.loads(sys.argv[1])
+except (IndexError, json.JSONDecodeError):
+    print(json.dumps([]))
+    sys.exit(0)
+conn = sqlite3.connect(db_path, timeout=3)
+conn.row_factory = sqlite3.Row
+results = []
+for item in spec:
+    q = item.get("query", "")
+    ids = item.get("ids", [])
+    try:
+        if ids:
+            ph = ",".join(["?"] * len(ids))
+            q = q.replace("?IDS?", ph)
+            rows = conn.execute(q, ids).fetchall()
+        else:
+            rows = conn.execute(q).fetchall()
+        results.append([dict(r) for r in rows])
+    except Exception:
+        results.append([])
+conn.close()
+print(json.dumps(results))
+'@
+$queryScriptPath = "$env:TEMP\cicada_query.py"
+Set-Content $queryScriptPath $queryScript -Encoding UTF8
+
+# ── Python helper: query cicada.db for board state ──
+$boardQueryScript = @'
+import sqlite3, sys, json, os
+
+db_path = sys.argv[1] if len(sys.argv) > 1 else os.path.expanduser("~/.cicada/cicada.db")
+if not os.path.exists(db_path):
+    print(json.dumps({"messages": [], "tasks": [], "unread": {}}))
+    sys.exit(0)
+
+team_id = sys.argv[2] if len(sys.argv) > 2 else ""
+
+try:
+    conn = sqlite3.connect(db_path, timeout=3)
+    conn.row_factory = sqlite3.Row
+
+    # Unread counts per agent
+    unread = {}
+    if team_id:
+        rows = conn.execute(
+            "SELECT to_alias, COUNT(*) as cnt FROM messages WHERE team_id = ? AND read = 0 AND to_alias IS NOT NULL GROUP BY to_alias",
+            (team_id,)
+        ).fetchall()
+        for r in rows:
+            unread[r["to_alias"]] = r["cnt"]
+        # Also count broadcasts
+        bc = conn.execute(
+            "SELECT COUNT(*) as cnt FROM messages WHERE team_id = ? AND read = 0 AND to_alias IS NULL",
+            (team_id,)
+        ).fetchone()
+        if bc and bc["cnt"] > 0:
+            unread["_broadcast"] = bc["cnt"]
+
+    # Recent messages (last 5)
+    messages = []
+    if team_id:
+        rows = conn.execute(
+            "SELECT from_alias, to_alias, kind, payload, created_at FROM messages WHERE team_id = ? ORDER BY created_at DESC LIMIT 5",
+            (team_id,)
+        ).fetchall()
+        messages = [dict(r) for r in rows]
+
+    # Task summary
+    tasks = []
+    if team_id:
+        rows = conn.execute(
+            "SELECT id, title, status, claimed_by, created_by FROM tasks WHERE team_id = ? ORDER BY created_at DESC LIMIT 10",
+            (team_id,)
+        ).fetchall()
+        tasks = [dict(r) for r in rows]
+
+    conn.close()
+    print(json.dumps({"messages": messages, "tasks": tasks, "unread": unread}))
+except Exception as e:
+    print(json.dumps({"messages": [], "tasks": [], "unread": {}, "error": str(e)}))
+'@
+$boardQueryScriptPath = "$env:TEMP\cicada_board_query.py"
+Set-Content $boardQueryScriptPath $boardQueryScript -Encoding UTF8
+
+function Invoke-BatchQuery {
+    param([array]$Queries)
+    try {
+        $spec = $Queries | ConvertTo-Json -Depth 3 -Compress
+        $raw = & python $queryScriptPath $spec 2>$null
+        if ($raw) { return ($raw | ConvertFrom-Json) }
+    } catch {}
+    return @()
+}
+
+function Invoke-BoardQuery {
+    param([string]$DbPath, [string]$TeamId)
+    try {
+        $raw = & python $boardQueryScriptPath $DbPath $TeamId 2>$null
+        if ($raw) { return ($raw | ConvertFrom-Json) }
+    } catch {}
+    return @{ messages = @(); tasks = @(); unread = @{} }
+}
+
+# ── ANSI helpers ──
+function Get-AnsiColor([string]$hex) {
+    $r = [Convert]::ToInt32($hex.Substring(1, 2), 16)
+    $g = [Convert]::ToInt32($hex.Substring(3, 2), 16)
+    $b = [Convert]::ToInt32($hex.Substring(5, 2), 16)
+    return "`e[38;2;${r};${g};${b}m"
+}
+$rst = "`e[0m"
+$dim = "`e[90m"
+$bold = "`e[1m"
+
+function Get-PanelWidth {
+    try { return [math]::Max(28, $Host.UI.RawUI.WindowSize.Width) }
+    catch { return 34 }
+}
+
+function Truncate([string]$text, [int]$max) {
+    if (-not $text -or $max -le 0) { return "" }
+    # Strip ANSI escape sequences and collapse whitespace
+    $clean = ($text -replace "`e\[[0-9;]*m", '' -replace '[\x00-\x1F]', ' ' -replace '\s+', ' ').Trim()
+    if ($clean.Length -le $max) { return $clean }
+    return $clean.Substring(0, $max - 1) + [char]0x2026
+}
+
+function Get-FirstMeaningfulLine([string]$text) {
+    if (-not $text) { return "" }
+    # Skip blank lines, fenced code markers, and pure-whitespace lines
+    foreach ($line in ($text -split "`n")) {
+        $trimmed = $line.Trim()
+        if ($trimmed.Length -gt 0 -and $trimmed -notmatch '^```' -and $trimmed -notmatch '^---+$' -and $trimmed -notmatch '^\*\*\*+$') {
+            return $trimmed
+        }
+    }
+    return ""
+}
+
+function Format-Ago([string]$isoTimestamp) {
+    if (-not $isoTimestamp) { return "?" }
+    try {
+        $dt = [DateTime]::Parse($isoTimestamp)
+        $mins = [math]::Round(((Get-Date).ToUniversalTime() - $dt).TotalMinutes)
+        if ($mins -lt 1) { return "now" }
+        if ($mins -lt 60) { return "${mins}m" }
+        return "$([math]::Floor($mins / 60))h"
+    } catch { return "?" }
+}
+
+# ── Helper: safely extract DateTime from state (avoids culture-dependent re-parsing) ──
+function Get-LaunchDateTime($value) {
+    if ($value -is [datetime]) { return $value }
+    return Get-Date $value
+}
+
+function Sync-AgentSessionBinding {
+    param(
+        [string]$DbPath,
+        [string]$TeamId,
+        [string]$Alias,
+        [string]$SessionId
+    )
+    if (-not $DbPath -or -not $TeamId -or -not $Alias -or -not $SessionId) { return }
+    try {
+        & python -m cicada_mcp bind-session --team-id $TeamId --alias $Alias --session-id $SessionId --db $DbPath 2>$null | Out-Null
+    } catch {}
+}
+
+# ── Session ID discovery: bind unbound panes to newly created sessions ──
+function Resolve-SessionIds {
+    param($State)
+    if (-not $State -or -not $State.panes -or -not $State.launchedAt) { return $false }
+    if (-not (Test-Path $sessionDir)) { return $false }
+
+    $unbound = @($State.panes | Where-Object { $_.role -and -not $_.sessionId })
+    if ($unbound.Count -eq 0) { return $false }
+
+    $launchDt = Get-LaunchDateTime $State.launchedAt
+    $launchTime = $launchDt.AddSeconds(-10)
+    $boundIds = @($State.panes | Where-Object { $_.sessionId } | ForEach-Object { $_.sessionId })
+
+    $candidates = @(Get-ChildItem $sessionDir -Directory -ErrorAction SilentlyContinue |
+        Where-Object { $_.CreationTime -ge $launchTime -and $_.Name -notin $boundIds } |
+        Sort-Object CreationTime)
+
+    if ($candidates.Count -eq 0) { return $false }
+
+    $changed = $false
+    for ($i = 0; $i -lt [math]::Min($unbound.Count, @($candidates).Count); $i++) {
+        $unbound[$i] | Add-Member -NotePropertyName 'sessionId' -NotePropertyValue $candidates[$i].Name -Force
+        Sync-AgentSessionBinding -DbPath $State.cicadaDb -TeamId $State.sessionGuid -Alias $unbound[$i].alias -SessionId $candidates[$i].Name
+        $changed = $true
+    }
+
+    if ($changed) {
+        # Write with file locking to avoid conflicts with Start-Agent
+        for ($attempt = 0; $attempt -lt 3; $attempt++) {
+            try {
+                $fs = [System.IO.File]::Open($StateFile, 'Open', 'ReadWrite', 'None')
+                try {
+                    $fs.SetLength(0)
+                    $writer = [System.IO.StreamWriter]::new($fs, [System.Text.Encoding]::UTF8)
+                    $writer.Write(($State | ConvertTo-Json -Depth 3))
+                    $writer.Flush()
+                    $writer.Dispose()
+                } finally { $fs.Dispose() }
+                break
+            } catch [System.IO.IOException] {
+                Start-Sleep -Milliseconds (100 * ($attempt + 1))
+            } catch { break }
+        }
+    }
+    return $changed
+}
+
+# ── Main render ──
+function Show-Monitor {
+    Clear-Host
+    $w = Get-PanelWidth
+    $lineChar = [string]::new([char]0x2500, [math]::Min($w - 2, 40))
+    $contextWidth = $w - 6
+    $time = Get-Date -Format "HH:mm:ss"
+
+    # Load state
+    $state = $null
+    if (Test-Path $StateFile) {
+        try { $state = Get-Content $StateFile -Raw | ConvertFrom-Json } catch {}
+    }
+
+    # Try to discover session IDs for unbound panes
+    if ($state) { [void](Resolve-SessionIds $state) }
+
+    # ── Header ──
+    Write-Host " ${bold}`u{25A0} CICADA${rst}  ${dim}$time${rst}"
+
+    # Uptime + agent count
+    $upStr = "?"
+    if ($state -and $state.launchedAt) {
+        try {
+            $upMin = [math]::Floor(((Get-Date) - (Get-LaunchDateTime $state.launchedAt)).TotalMinutes)
+            $upStr = if ($upMin -lt 1) { "<1m" } elseif ($upMin -lt 60) { "${upMin}m" } else { "$([math]::Floor($upMin/60))h$($upMin % 60)m" }
+        } catch {}
+    }
+    # Agent count: use pane count from state, not system-wide process count
+    $agentCount = if ($state -and $state.panes) { @($state.panes).Count } else { 0 }
+    Write-Host " ${dim}$agentCount agents `u{2502} up $upStr${rst}"
+    Write-Host " $dim$lineChar$rst"
+
+    if (-not $state -or -not $state.panes) {
+        Write-Host ""; Write-Host " ${dim}Waiting for cicada launch...$rst"
+        Write-Host " $dim$lineChar$rst"
+        Write-Host " ${dim}`u{21BB} ${Interval}s `u{2502} Ctrl+C exit$rst"
+        return
+    }
+
+    # ── Batch DB query: stats+latest (CTE) + activity feed ──
+    $sessionIds = @($state.panes | Where-Object { $_.sessionId } | ForEach-Object { $_.sessionId })
+    $agentData = @{}
+    $activityFeed = @()
+
+    if ($sessionIds.Count -gt 0) {
+        $results = Invoke-BatchQuery -Queries @(
+            # Q0: CTE — stats + latest turn per agent in a single query
+            @{
+                query = "WITH latest AS (SELECT session_id, MAX(turn_index) AS max_turn, COUNT(*) AS turns, MAX(timestamp) AS last_active FROM turns WHERE session_id IN (?IDS?) GROUP BY session_id) SELECT l.session_id, l.turns, l.last_active, t.user_message, t.assistant_response FROM latest l LEFT JOIN turns t ON t.session_id = l.session_id AND t.turn_index = l.max_turn"
+                ids = $sessionIds
+            },
+            # Q1: activity feed — recent turns across all agents
+            @{
+                query = "SELECT session_id, user_message, assistant_response, timestamp FROM turns WHERE session_id IN (?IDS?) ORDER BY timestamp DESC LIMIT 5"
+                ids = $sessionIds
+            }
+        )
+        if ($results.Count -ge 1 -and $results[0]) {
+            foreach ($r in $results[0]) { $agentData[$r.session_id] = $r }
+        }
+        if ($results.Count -ge 2 -and $results[1]) { $activityFeed = $results[1] }
+    }
+
+    # Total turns
+    $totalTurns = 0
+    foreach ($d in $agentData.Values) { $totalTurns += $d.turns }
+    if ($totalTurns -gt 0) { Write-Host " ${dim}$totalTurns turns across team${rst}" }
+    Write-Host ""
+
+    # ── Team: per-agent status + conversation context ──
+    Write-Host " ${bold}Team${rst}" -ForegroundColor Yellow
+
+    foreach ($p in $state.panes) {
+        $color = Get-AnsiColor $p.color
+
+        # Determine status based on session data, not process count
+        $turns = 0; $age = ""; $status = "launching"
+        if ($p.sessionId -and $agentData.ContainsKey($p.sessionId)) {
+            $d = $agentData[$p.sessionId]
+            $turns = $d.turns
+            $age = Format-Ago $d.last_active
+            $status = if ($turns -eq 0) { "waiting" }
+                      elseif ($age -eq "now" -or $age -eq "1m") { "active" }
+                      else { "idle" }
+        } elseif ($p.sessionId) {
+            $status = "waiting"
+        }
+
+        $dot = switch ($status) {
+            "active"    { "`e[32m" + [char]0x25CF + $rst }   # green filled
+            "waiting"   { "`e[33m" + [char]0x25CF + $rst }   # yellow filled
+            "launching" { "`e[33m" + [char]0x25CB + $rst }   # yellow hollow
+            "idle"      { $dim + [char]0x25CF + $rst }       # gray filled
+            default     { $dim + [char]0x25CB + $rst }       # gray hollow
+        }
+
+        $statsStr = if ($turns -gt 0) { " ${dim}${turns}t $age${rst}" }
+                    elseif ($status -eq "launching") { " ${dim}starting${rst}" }
+                    elseif ($status -eq "waiting") { " ${dim}ready${rst}" }
+                    else { "" }
+
+        Write-Host " ${dot} ${color}$($p.title)${rst}${statsStr}"
+
+        # Line 2: conversation context (show EITHER user ask OR assistant response, not both)
+        if ($p.sessionId -and $agentData.ContainsKey($p.sessionId)) {
+            $d = $agentData[$p.sessionId]
+            $contextLine = ""
+            if ($d.assistant_response) {
+                $firstLine = Get-FirstMeaningfulLine $d.assistant_response
+                $contextLine = Truncate $firstLine $contextWidth
+            } elseif ($d.user_message) {
+                $contextLine = Truncate $d.user_message $contextWidth
+            }
+            if ($contextLine) {
+                Write-Host "   ${dim}$contextLine${rst}"
+            }
+        } elseif ($status -eq "waiting") {
+            Write-Host "   ${dim}awaiting first prompt${rst}"
+        } elseif ($status -eq "launching") {
+            Write-Host "   ${dim}copilot loading...${rst}"
+        }
+    }
+
+    # ── Board: messages + tasks from cicada.db ──
+    $cicadaDb = "$HOME\.cicada\cicada.db"
+    $teamId = $state.sessionGuid
+    $boardData = $null
+
+    if ((Test-Path $cicadaDb) -and $teamId) {
+        $boardData = Invoke-BoardQuery -DbPath $cicadaDb -TeamId $teamId
+    }
+
+    if ($boardData -and ($boardData.messages.Count -gt 0 -or $boardData.tasks.Count -gt 0)) {
+        Write-Host ""
+        Write-Host " ${bold}Board${rst}" -ForegroundColor Yellow
+
+        # Unread summary
+        $totalUnread = 0
+        if ($boardData.unread) {
+            foreach ($key in $boardData.unread.PSObject.Properties.Name) {
+                $totalUnread += $boardData.unread.$key
+            }
+        }
+        $taskOpen = @($boardData.tasks | Where-Object { $_.status -eq 'open' }).Count
+        $taskClaimed = @($boardData.tasks | Where-Object { $_.status -eq 'claimed' }).Count
+        $taskDone = @($boardData.tasks | Where-Object { $_.status -eq 'done' }).Count
+
+        if ($totalUnread -gt 0) {
+            # Show per-agent unread
+            $unreadParts = @()
+            foreach ($key in $boardData.unread.PSObject.Properties.Name) {
+                if ($key -ne '_broadcast') {
+                    $unreadParts += "$($boardData.unread.$key) for $key"
+                }
+            }
+            $unreadStr = if ($unreadParts.Count -gt 0) { " ($($unreadParts -join ', '))" } else { "" }
+            Write-Host " `u{1F4AC} $totalUnread unread$unreadStr" -ForegroundColor White
+        }
+
+        if ($boardData.tasks.Count -gt 0) {
+            $taskParts = @()
+            if ($taskOpen -gt 0) { $taskParts += "$taskOpen open" }
+            if ($taskClaimed -gt 0) { $taskParts += "$taskClaimed claimed" }
+            if ($taskDone -gt 0) { $taskParts += "$taskDone done" }
+            Write-Host " `u{1F4CB} $($boardData.tasks.Count) tasks ($($taskParts -join ', '))" -ForegroundColor White
+        }
+
+        # Recent messages (max 3)
+        if ($boardData.messages.Count -gt 0) {
+            Write-Host ""
+            $msgShown = 0
+            foreach ($msg in $boardData.messages) {
+                if ($msgShown -ge 3) { break }
+                $fromAlias = $msg.from_alias
+                $toAlias = if ($msg.to_alias) { $msg.to_alias } else { "team" }
+                $arrow = [char]0x2192  # →
+                $msgTime = ""
+                if ($msg.created_at) {
+                    try { $msgTime = ([DateTime]::Parse($msg.created_at)).ToLocalTime().ToString("HH:mm") } catch {}
+                }
+                $preview = Truncate $msg.payload ($w - 10)
+                Write-Host " ${dim}$msgTime${rst} $fromAlias $arrow $toAlias"
+                if ($preview) { Write-Host "   ${dim}$preview${rst}" }
+                $msgShown++
+            }
+        }
+    }
+
+    Write-Host ""
+
+    # ── Activity feed: recent completed turns ──
+    if ($activityFeed.Count -gt 0) {
+        Write-Host " ${bold}Recent${rst}" -ForegroundColor Yellow
+
+        $idToRole = @{}; $idToColor = @{}
+        foreach ($p in $state.panes) {
+            if ($p.sessionId) {
+                $idToRole[$p.sessionId] = $p.title
+                $idToColor[$p.sessionId] = Get-AnsiColor $p.color
+            }
+        }
+
+        $shown = 0
+        foreach ($entry in $activityFeed) {
+            if ($shown -ge 3) { break }
+            $role = if ($idToRole.ContainsKey($entry.session_id)) { $idToRole[$entry.session_id] } else { "?" }
+            $roleColor = if ($idToColor.ContainsKey($entry.session_id)) { $idToColor[$entry.session_id] } else { $dim }
+            $feedTime = ""
+            if ($entry.timestamp) {
+                try { $feedTime = ([DateTime]::Parse($entry.timestamp)).ToLocalTime().ToString("HH:mm") } catch {}
+            }
+
+            $summary = ""
+            if ($entry.assistant_response) {
+                $summary = Truncate (Get-FirstMeaningfulLine $entry.assistant_response) ($w - 10)
+            } elseif ($entry.user_message) {
+                $summary = Truncate $entry.user_message ($w - 10)
+            }
+
+            Write-Host " ${dim}$feedTime${rst} ${roleColor}$role${rst}"
+            if ($summary) { Write-Host "   ${dim}$summary${rst}" }
+            $shown++
+        }
+    }
+
+    Write-Host ""
+
+    # ── Other sessions (compact) ──
+    if (Test-Path $sessionDir) {
+        $gridIds = @($state.panes | Where-Object { $_.sessionId } | ForEach-Object { $_.sessionId })
+        $allOthers = @(Get-ChildItem $sessionDir -Directory -ErrorAction SilentlyContinue |
+            Where-Object { $_.Name -notin $gridIds })
+        if ($allOthers.Count -gt 0) {
+            $recent = $allOthers | Sort-Object LastWriteTime -Descending | Select-Object -First 3
+            Write-Host " ${dim}$($allOthers.Count) other sessions${rst}"
+            foreach ($s in $recent) {
+                $id = $s.Name.Substring(0, 8)
+                $mins = [math]::Round(((Get-Date) - $s.LastWriteTime).TotalMinutes)
+                $age = if ($mins -lt 1) { "now" } elseif ($mins -lt 60) { "${mins}m" } else { "$([math]::Floor($mins/60))h" }
+                Write-Host " ${dim}`u{25CB} $id $age${rst}"
+            }
+        }
+    }
+
+    Write-Host ""
+    Write-Host " $dim$lineChar$rst"
+    Write-Host " ${dim}`u{21BB} ${Interval}s `u{2502} Ctrl+C exit$rst"
+}
+
+while ($true) {
+    Show-Monitor
+    Start-Sleep -Seconds $Interval
+}
