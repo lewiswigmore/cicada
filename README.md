@@ -10,6 +10,12 @@ Launch a team of role-assigned Copilot agents in an adaptive pane layout with
 MCP-powered coordination, a shared task board, message passing, and a live
 monitor sidebar.
 
+<p align="center">
+  <img src="cicada-agents.png" alt="Cicada agents coordinating on a task" width="900">
+  <br>
+  <em>Four agents collaborating on <a href="https://github.com/lewiswigmore/cicada/issues/1">Issue #1</a> — task board, messaging, and code review in action.</em>
+</p>
+
 ---
 
 ## Release baseline
