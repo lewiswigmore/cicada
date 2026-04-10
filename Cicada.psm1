@@ -27,11 +27,31 @@ function Show-CicadaLogo {
     Write-Host ""
 }
 
+function Get-CicadaFunFact {
+    $facts = @(
+        'Periodical cicadas spend 13 or 17 years underground before emerging — both prime numbers.'
+        'A cicada chorus can reach 100 decibels, as loud as a lawnmower.'
+        'Cicadas are found on every continent except Antarctica.'
+        'There are over 3,000 known species of cicada worldwide.'
+        'Cicadas do not bite or sting — they are harmless to humans.'
+        'The name "cicada" comes from the Latin word for "tree cricket."'
+        'Cicadas vibrate drum-like organs called tymbals to produce their song.'
+        'Some cicada broods have been tracked since the 1700s.'
+        'Cicadas molt their exoskeleton and leave behind a perfect hollow shell.'
+        'Ancient Greeks kept cicadas in cages to enjoy their song.'
+        'Cicadas can fly up to 8 mph despite their clumsy appearance.'
+        'A single cicada emergence can number in the billions.'
+    )
+    return $facts[(Get-Random -Minimum 0 -Maximum $facts.Count)]
+}
+
 function Show-CicadaHelp {
     $v = (Import-PowerShellDataFile "$PSScriptRoot\Cicada.psd1").ModuleVersion
     Show-CicadaLogo
     Write-Host "  Multi-agent terminal orchestrator" -ForegroundColor DarkGray
     Write-Host "  Version $v" -ForegroundColor DarkGray
+    Write-Host ""
+    Write-Host "  Did you know?  $(Get-CicadaFunFact)" -ForegroundColor DarkCyan
     Write-Host ""
     Write-Host "  Usage: cicada [options]" -ForegroundColor White
     Write-Host ""
