@@ -30,6 +30,7 @@ disk and does not fetch or execute a mutable remote script.
 
 ```powershell
 cicada --team "coder,reviewer"
+cicada --team "architect,coder,reviewer"   # uses custom roles from roles.json
 cicada --prompt "We are working on the MCP module"
 cicada --yolo
 cicada --autopilot

@@ -165,6 +165,36 @@ This keeps install and update behavior auditable and avoids mutable remote code 
 
 Roles are defined in `roles.json`. Edit prompts, colors, and titles there.
 
+### Custom roles
+
+Add your own roles by editing `roles.json`. Each role needs three fields:
+
+```json
+{
+  "architect": {
+    "color": "#EC4899",
+    "title": "Architect",
+    "prompt": "You are the Architect. Design system structure, define interfaces, and make technical decisions. Review proposals for scalability and maintainability. Wait for instructions before starting any work."
+  }
+}
+```
+
+| Field   | Format           | Description                          |
+|---------|------------------|--------------------------------------|
+| `color` | `#RRGGBB` hex    | Tab color in Windows Terminal        |
+| `title` | Plain text       | Display name (no shell metacharacters) |
+| `prompt`| Free text        | System prompt sent to the Copilot agent |
+
+Then use it with `--team`:
+
+```powershell
+cicada --team architect,coder,reviewer
+```
+
+Validation runs at launch -- Cicada will report clear errors if a role name
+is missing from `roles.json`, the color format is wrong, or the title contains
+invalid characters.
+
 ---
 
 ## MCP Coordination
