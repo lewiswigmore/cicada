@@ -38,42 +38,27 @@ For the operator workflow and common launch patterns, see [`USAGE.md`](USAGE.md)
 
 ## Installation
 
-### Recommended: local clone or release archive
-
 ```powershell
 git clone https://github.com/lewiswigmore/cicada.git
 cd cicada
 pwsh -File .\Install-Cicada.ps1
 ```
 
-This installs from files you already have locally, which avoids executing a
-mutable remote script directly from the network.
-
-### Alternative: manual local install
-
-```powershell
-git clone https://github.com/lewiswigmore/cicada.git
-cd cicada
-pip install -e .
-Import-Module .\Cicada.psd1
-```
-
-Until immutable release archives or a package registry flow are in place, avoid
-`irm ... | iex` style installation for this repository.
-
-To make `cicada` available in every session, add to your PowerShell profile:
+Then add to your PowerShell profile so `cicada` is available in every session:
 
 ```powershell
 Import-Module Cicada
 ```
 
-### Verify
+Verify with:
 
 ```powershell
 cicada --doctor
 ```
 
-This checks that all dependencies are installed and reports any issues.
+**New to this?** See [`INSTALL.md`](INSTALL.md) for a complete step-by-step
+guide starting from a fresh Windows machine — covers installing every
+prerequisite via the CLI, authentication, troubleshooting, and edge cases.
 
 ---
 
