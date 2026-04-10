@@ -371,13 +371,17 @@ function NextAgentPane {
 
 # --- Build wt argument string ---
 # Adaptive layout for 1-6 agents with optional monitor column on the right.
-# Uses move-focus to navigate between panes before splitting.
+# Uses focus-pane -t <id> to target specific panes before splitting.
+# Pane IDs: 0=Ag0, 1=Monitor(if enabled), then agents sequentially.
 # After each split-pane, the NEW pane receives focus.
 
 $wtNewWindow = "-w new"
 
 # First agent fills the initial pane (pane 0)
 $wt = "$wtNewWindow --maximized $(NextAgentPane)"
+
+# Monitor offset — shifts agent pane IDs by 1 when monitor is present
+$monOfs = 0
 
 # Add monitor column on right (20% width) — splits off initial pane
 if (-not $NoMonitor) {
@@ -386,12 +390,15 @@ if (-not $NoMonitor) {
     if (Test-Path $monitorScript) {
         $monArgs += " pwsh -NoExit -File `"$monitorScript`" -StateFile `"$stateFile`""
     }
+    # Monitor = pane 1
     $wt += " ; split-pane -V -s 0.2 $monArgs"
-    # Focus is now on Monitor — move back to Agent0
-    $wt += " ; move-focus left"
+    $monOfs = 1
+    # Return focus to Ag0 (pane 0)
+    $wt += " ; focus-pane -t 0"
 }
 
-# Layout remaining agents (Agent0 is focused, monitor is to the far right)
+# Layout remaining agents
+# Pane IDs: Ag0=0, Ag(N)=(N + $monOfs) for N>=1
 switch ($Panes) {
     1 {
         # Single agent — nothing more to do
@@ -402,38 +409,39 @@ switch ($Panes) {
     }
     3 {
         # 3 columns: [Ag0 | Ag1 | Ag2]
-        # Split Ag0 → Ag1 gets focus, split Ag1 → Ag2
         $wt += " ; split-pane -V -s 0.67 $(NextAgentPane)"
         $wt += " ; split-pane -V -s 0.5 $(NextAgentPane)"
     }
     4 {
         # 2x2 grid: [Ag0 | Ag1] / [Ag2 | Ag3]
-        $wt += " ; split-pane -V -s 0.5 $(NextAgentPane)"   # Ag1 right of Ag0, focus: Ag1
-        $wt += " ; move-focus left"                          # focus: Ag0
+        $ag1 = 1 + $monOfs
+        $wt += " ; split-pane -V -s 0.5 $(NextAgentPane)"   # Ag1, focus: Ag1
+        $wt += " ; focus-pane -t 0"                           # → Ag0
         $wt += " ; split-pane -H -s 0.5 $(NextAgentPane)"   # Ag2 below Ag0, focus: Ag2
-        $wt += " ; move-focus right"                         # focus: Ag1
+        $wt += " ; focus-pane -t $ag1"                        # → Ag1
         $wt += " ; split-pane -H -s 0.5 $(NextAgentPane)"   # Ag3 below Ag1
     }
     5 {
         # 3 top + 2 bottom: [Ag0 | Ag1 | Ag2] / [Ag3 | Ag4]
+        $ag1 = 1 + $monOfs
         $wt += " ; split-pane -V -s 0.67 $(NextAgentPane)"  # Ag1, focus: Ag1
         $wt += " ; split-pane -V -s 0.5 $(NextAgentPane)"   # Ag2, focus: Ag2
-        $wt += " ; move-focus left"                          # focus: Ag1
-        $wt += " ; move-focus left"                          # focus: Ag0
+        $wt += " ; focus-pane -t 0"                           # → Ag0
         $wt += " ; split-pane -H -s 0.5 $(NextAgentPane)"   # Ag3 below Ag0, focus: Ag3
-        $wt += " ; move-focus right"                         # focus: Ag1
+        $wt += " ; focus-pane -t $ag1"                        # → Ag1
         $wt += " ; split-pane -H -s 0.5 $(NextAgentPane)"   # Ag4 below Ag1
     }
     6 {
         # 3x2 grid: [Ag0 | Ag1 | Ag2] / [Ag3 | Ag4 | Ag5]
+        $ag1 = 1 + $monOfs
+        $ag2 = 2 + $monOfs
         $wt += " ; split-pane -V -s 0.67 $(NextAgentPane)"  # Ag1, focus: Ag1
         $wt += " ; split-pane -V -s 0.5 $(NextAgentPane)"   # Ag2, focus: Ag2
-        $wt += " ; move-focus left"                          # focus: Ag1
-        $wt += " ; move-focus left"                          # focus: Ag0
+        $wt += " ; focus-pane -t 0"                           # → Ag0
         $wt += " ; split-pane -H -s 0.5 $(NextAgentPane)"   # Ag3 below Ag0, focus: Ag3
-        $wt += " ; move-focus right"                         # focus: Ag1
+        $wt += " ; focus-pane -t $ag1"                        # → Ag1
         $wt += " ; split-pane -H -s 0.5 $(NextAgentPane)"   # Ag4 below Ag1, focus: Ag4
-        $wt += " ; move-focus right"                         # focus: Ag2
+        $wt += " ; focus-pane -t $ag2"                        # → Ag2
         $wt += " ; split-pane -H -s 0.5 $(NextAgentPane)"   # Ag5 below Ag2
     }
 }
