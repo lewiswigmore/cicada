@@ -100,7 +100,7 @@ At minimum, `cicada --doctor` should pass and a basic launch should work before 
 
 ## Submitting a PR
 
-1. Fork the repository and create a branch from `main`.
+1. Fork the repository and create a branch from `master`.
 2. Keep changes focused — one logical change per PR.
 3. Make sure `cicada --doctor` passes and a basic launch works.
 4. Write a clear PR description explaining what changed and why.
@@ -108,6 +108,12 @@ At minimum, `cicada --doctor` should pass and a basic launch should work before 
 
 For bug fixes, describe the steps to reproduce the issue.
 For new features, explain the use case.
+
+All PRs require at least one approving review before merging to `master`. Copilot code review runs automatically on PRs — address any feedback it raises. Direct pushes to `master` are not permitted for non-admin contributors.
+
+## Security
+
+If you discover a security vulnerability, do not open a public issue. Use GitHub's private vulnerability reporting instead. See [SECURITY.md](SECURITY.md) for details.
 
 ## Questions
 
