@@ -106,6 +106,8 @@ foreach ($f in $psFiles) {
         Copy-Item $src "$modulePath\$f"
     }
 }
+# Save source path for --update to find the git clone later
+$SourcePath | Set-Content "$modulePath\.source-path" -Encoding UTF8
 Write-Host "        Copied to $modulePath" -ForegroundColor DarkGray
 
 # Copy Python MCP package

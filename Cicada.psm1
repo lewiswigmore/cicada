@@ -351,13 +351,20 @@ function Update-Cicada {
 
     $moduleBase = $PSScriptRoot
 
-    # Detect install method: git repo vs copied module
-    $isGitRepo = Test-Path "$moduleBase\.git"
+    # Find the original source (git clone) directory
+    $sourcePathFile = "$moduleBase\.source-path"
+    $sourceDir = $null
+    if (Test-Path $sourcePathFile) {
+        $sourceDir = (Get-Content $sourcePathFile -Raw).Trim()
+    }
 
-    if ($isGitRepo) {
-        # Git clone install — pull latest
+    # Check if the source dir is a valid git repo
+    $isGitSource = $sourceDir -and (Test-Path "$sourceDir\.git")
+
+    if ($isGitSource) {
+        # Git pull in the original clone directory
         Write-Host "  Pulling latest from origin..." -ForegroundColor DarkGray
-        $pullOutput = git -C $moduleBase pull --ff-only 2>&1
+        $pullOutput = git -C $sourceDir pull --ff-only 2>&1
         if ($LASTEXITCODE -ne 0) {
             Write-Host "  [!!] git pull failed:" -ForegroundColor Red
             Write-Host "  $pullOutput" -ForegroundColor Red
@@ -365,11 +372,33 @@ function Update-Cicada {
         }
         Write-Host "  $pullOutput" -ForegroundColor DarkGray
 
+        # Re-copy module files from source to installed module path
+        Write-Host "  Copying updated files..." -ForegroundColor DarkGray
+        $psFiles = @('Cicada.psd1', 'Cicada.psm1', 'Invoke-Cicada.ps1', 'Start-Agent.ps1', 'Watch-Sessions.ps1', 'roles.json')
+        foreach ($f in $psFiles) {
+            $src = Join-Path $sourceDir $f
+            if (Test-Path $src) {
+                Copy-Item $src "$moduleBase\$f" -Force
+            }
+        }
+        # Re-copy Python package
+        $mcpSrc = Join-Path $sourceDir "cicada_mcp"
+        if (Test-Path $mcpSrc) {
+            if (Test-Path "$moduleBase\cicada_mcp") {
+                Remove-Item "$moduleBase\cicada_mcp" -Recurse -Force
+            }
+            Copy-Item $mcpSrc "$moduleBase\cicada_mcp" -Recurse
+        }
+        $pyprojectSrc = Join-Path $sourceDir "pyproject.toml"
+        if (Test-Path $pyprojectSrc) {
+            Copy-Item $pyprojectSrc "$moduleBase\pyproject.toml" -Force
+        }
+
         # Reinstall Python package if available
         $pythonCmd = Get-Command python -ErrorAction SilentlyContinue
         if ($pythonCmd) {
             Write-Host "  Updating Python MCP package..." -ForegroundColor DarkGray
-            & python -m pip install --quiet -e "$moduleBase" 2>&1 | Out-Null
+            & python -m pip install --quiet $moduleBase 2>&1 | Out-Null
             if ($LASTEXITCODE -eq 0) {
                 Write-Host "  [OK] cicada-mcp updated" -ForegroundColor Green
             } else {
@@ -377,12 +406,16 @@ function Update-Cicada {
             }
         }
     } else {
-        Write-Host "  Safe auto-update is only available for git-based installs." -ForegroundColor Yellow
-        Write-Host "  This install does not have a git checkout, so Cicada will not download and execute remote code automatically." -ForegroundColor DarkGray
+        Write-Host "  Could not find the original git clone." -ForegroundColor Yellow
+        if ($sourceDir) {
+            Write-Host "  Saved source path: $sourceDir" -ForegroundColor DarkGray
+            Write-Host "  That directory no longer exists or is not a git repo." -ForegroundColor DarkGray
+        }
         Write-Host ""
-        Write-Host "  Reinstall safely from a local clone or immutable release archive:" -ForegroundColor DarkGray
-        Write-Host "    1. Download or clone the desired Cicada version locally" -ForegroundColor DarkGray
-        Write-Host "    2. Run: pwsh -File .\\Install-Cicada.ps1" -ForegroundColor DarkGray
+        Write-Host "  To update, re-run the installer from your clone:" -ForegroundColor DarkGray
+        Write-Host "    cd <your-cicada-clone>" -ForegroundColor DarkGray
+        Write-Host "    git pull" -ForegroundColor DarkGray
+        Write-Host "    pwsh -File .\Install-Cicada.ps1" -ForegroundColor DarkGray
         Write-Host ""
         return
     }
