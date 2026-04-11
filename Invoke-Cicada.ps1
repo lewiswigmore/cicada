@@ -47,7 +47,8 @@ param(
     [switch]$Clear,
     [switch]$Yolo,
     [switch]$Autopilot,
-    [string]$Prompt
+    [string]$Prompt,
+    [int]$MaxCycles = 0
 )
 
 # --- Clear: remove Cicada sessions and state ---
@@ -163,6 +164,7 @@ if ($Resume) {
         $Autopilot = [switch]::new($true)
         $Yolo = [switch]::new($true)
     }
+    if ($saved.maxCycles -and $MaxCycles -eq 0) { $MaxCycles = [int]$saved.maxCycles }
     if ($saved.team) { $Team = $saved.team }
     if ($saved.prompt) { $Prompt = [string]$saved.prompt }
     $WorkingDirectory = if ($saved.workDir) { $saved.workDir } else { (Get-Location).Path }
@@ -323,6 +325,7 @@ $state = @{
     noMcp       = [bool]$NoMcp
     yolo        = [bool]$Yolo
     autopilot   = [bool]$Autopilot
+    maxCycles   = $MaxCycles
     prompt      = $Prompt
     mcpConfig   = if ($mcpEnabled) { "$cicadaDir\mcp-config-$sessionGuid-*.json" } else { $null }
     cicadaDb    = $cicadaDb
@@ -361,6 +364,9 @@ function NextAgentPane {
     }
     if ($Autopilot) {
         $cmd += " -Autopilot"
+    }
+    if ($MaxCycles -gt 0) {
+        $cmd += " -MaxCycles $MaxCycles"
     }
     if ($Prompt) {
         $escaped = $Prompt -replace '"', '\"'
