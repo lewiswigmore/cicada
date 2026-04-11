@@ -80,6 +80,11 @@ def init_db(db_path: str) -> sqlite3.Connection:
     conn.row_factory = sqlite3.Row
     conn.executescript(_SCHEMA_SQL)
 
+    # Migrate legacy 'claimed' status to 'in-progress'
+    conn.execute(
+        "UPDATE tasks SET status = 'in-progress' WHERE status = 'claimed'"
+    )
+
     # Record schema version (idempotent)
     existing = conn.execute(
         "SELECT version FROM schema_version WHERE version = ?", (SCHEMA_VERSION,)

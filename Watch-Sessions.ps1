@@ -174,12 +174,12 @@ function Invoke-BoardQuery {
          elseif (Get-Command python3 -ErrorAction SilentlyContinue) { 'python3' }
          elseif (Get-Command python -ErrorAction SilentlyContinue) { 'python' }
          else { $null }
-    if (-not $py) { return @{ messages = @(); tasks = @(); unread = @{} } }
+    if (-not $py) { return @{ messages = @(); tasks = @(); task_counts = @{}; unread = @{}; activity = @(); agent_status = @{} } }
     try {
         $raw = & $py $boardQueryScriptPath $DbPath $TeamId 2>$null
         if ($raw) { return ($raw | ConvertFrom-Json) }
     } catch {}
-    return @{ messages = @(); tasks = @(); unread = @{} }
+    return @{ messages = @(); tasks = @(); task_counts = @{}; unread = @{}; activity = @(); agent_status = @{} }
 }
 
 # ── ANSI helpers ──

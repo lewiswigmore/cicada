@@ -352,14 +352,12 @@ if ($McpConfigPath -and (Test-Path $McpConfigPath)) {
     $env:CICADA_DB = $CicadaDb
 }
 
-# Resolve effective max cycles: 0 = smart default (5 normally, unlimited in autopilot)
+# Resolve effective max cycles: 0 = smart default (single run normally, unlimited in autopilot with MCP)
 $mcpActive = $McpConfigPath -and (Test-Path $McpConfigPath)
 $effectiveMaxCycles = if ($MaxCycles -gt 0) {
     $MaxCycles
 } elseif ($Autopilot -and $mcpActive) {
     [int]::MaxValue
-} elseif ($mcpActive) {
-    5
 } else {
     1
 }
