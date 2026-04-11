@@ -363,7 +363,12 @@ $state | ConvertTo-Json -Depth 4 | Set-Content $stateFile -Encoding UTF8
 
 # --- Per-pane argument builder ---
 
-$agentScript = "$PSScriptRoot\Start-Agent.ps1"
+# Copy Start-Agent.ps1 to ~/.cicada/ to shorten the WT command line.
+# OneDrive module paths (e.g. C:\Users\...\OneDrive\Documents\PowerShell\Modules\Cicada\Start-Agent.ps1)
+# cause E_INVALIDARG (0x80070057) when the total wt.exe argument string gets too long.
+$agentScriptSource = "$PSScriptRoot\Start-Agent.ps1"
+$agentScript = "$cicadaDir\Start-Agent.ps1"
+Copy-Item $agentScriptSource $agentScript -Force
 $script:paneIdx = 0
 
 function NextAgentPane {
@@ -372,8 +377,9 @@ function NextAgentPane {
 
     # Build agent config and write to a temp JSON file to avoid WT command-line length limits
     $agentCfg = @{
-        Role     = $cfg.Role
-        Alias    = $cfg.Alias
+        Role      = $cfg.Role
+        Alias     = $cfg.Alias
+        RolesFile = "$PSScriptRoot\roles.json"
         StateFile = $stateFile
     }
     if ($mcpEnabled) {
