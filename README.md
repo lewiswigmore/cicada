@@ -1,7 +1,7 @@
 # Cicada
 
 <p align="center">
-  <img src=".github/logo.svg" alt="Cicada" width="260">
+  <img src="images/cicada-fly.gif" alt="Cicada" width="420">
 </p>
 
 Multi-agent terminal orchestrator for Windows Terminal and GitHub Copilot CLI.
