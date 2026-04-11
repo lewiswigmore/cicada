@@ -164,43 +164,46 @@ if ($pythonExe) {
     $cicadaDir = "$HOME\.cicada"
     if (-not (Test-Path $cicadaDir)) { New-Item $cicadaDir -ItemType Directory -Force | Out-Null }
 
-    # Check if pip is available — bootstrap if missing
-    $pipCheck = & $pythonExe -m pip --version 2>&1
-    if ($LASTEXITCODE -ne 0) {
+    # Create or reuse a dedicated venv for the MCP server
+    $venvDir = "$cicadaDir\venv"
+    $venvPython = "$venvDir\Scripts\python.exe"
+    if (-not (Test-Path $venvPython)) {
         $pyExe = (Get-Command $pythonExe).Source
-        $r = Invoke-WithSpinner -Label "Bootstrapping pip..." -ScriptBlock ([scriptblock]::Create("& '$pyExe' -m ensurepip --upgrade 2>&1"))
-        $pipCheck = & $pythonExe -m pip --version 2>&1
+        $r = Invoke-WithSpinner -Label "Creating venv..." -ScriptBlock ([scriptblock]::Create("& '$pyExe' -m venv '$venvDir' 2>&1"))
+        if (-not (Test-Path $venvPython)) {
+            Write-Host "        [WARN] venv creation failed — MCP features disabled" -ForegroundColor Yellow
+            $pythonExe = $null
+        }
+    }
+}
+
+if ($pythonExe) {
+    $venvDir = "$HOME\.cicada\venv"
+    $venvPython = "$venvDir\Scripts\python.exe"
+    $modDir = $modulePath
+    $installed = $false
+
+    # Upgrade pip inside the venv
+    $pipCheck = & $venvPython -m pip --version 2>$null
+    if ($LASTEXITCODE -ne 0) {
+        $r = Invoke-WithSpinner -Label "Bootstrapping pip..." -ScriptBlock ([scriptblock]::Create("& '$venvPython' -m ensurepip --upgrade 2>&1"))
     }
 
-    if ($LASTEXITCODE -eq 0) {
-        $pyExe = (Get-Command $pythonExe).Source
-        $modDir = $modulePath
-        $installed = $false
-        try {
-            $r = Invoke-WithSpinner -Label "Installing cicada-mcp..." -ScriptBlock ([scriptblock]::Create("& '$pyExe' -m pip install --quiet '$modDir' 2>&1; `$LASTEXITCODE"))
-            # Verify it actually installed by trying to import it
-            & $pythonExe -c "import cicada_mcp" 2>&1 | Out-Null
-            if ($LASTEXITCODE -eq 0) {
-                $installed = $true
-            } else {
-                # Retry with --user for externally-managed environments (Python 3.12+)
-                $r2 = Invoke-WithSpinner -Label "Retrying with --user flag..." -ScriptBlock ([scriptblock]::Create("& '$pyExe' -m pip install --quiet --user '$modDir' 2>&1; `$LASTEXITCODE"))
-                & $pythonExe -c "import cicada_mcp" 2>&1 | Out-Null
-                if ($LASTEXITCODE -eq 0) { $installed = $true }
-            }
-        } catch {
-            Write-Host "        [WARN] Python setup error: $_" -ForegroundColor Yellow
+    try {
+        $r = Invoke-WithSpinner -Label "Installing cicada-mcp..." -ScriptBlock ([scriptblock]::Create("& '$venvPython' -m pip install --quiet '$modDir' 2>&1; `$LASTEXITCODE"))
+        & $venvPython -c "import cicada_mcp" 2>&1 | Out-Null
+        if ($LASTEXITCODE -eq 0) {
+            $installed = $true
         }
+    } catch {
+        Write-Host "        [WARN] Python setup error: $_" -ForegroundColor Yellow
+    }
 
-        if ($installed) {
-            Write-Host "        [OK] cicada-mcp installed" -ForegroundColor Green
-        } else {
-            Write-Host "        [WARN] cicada-mcp install failed — MCP features disabled" -ForegroundColor Yellow
-            Write-Host "        Try manually: $pythonExe -m pip install `"$modulePath`"" -ForegroundColor DarkGray
-        }
+    if ($installed) {
+        Write-Host "        [OK] cicada-mcp installed" -ForegroundColor Green
     } else {
-        Write-Host "        [WARN] pip unavailable — MCP features disabled" -ForegroundColor Yellow
-        Write-Host "        Fix: install pip, then re-run this installer" -ForegroundColor DarkGray
+        Write-Host "        [WARN] cicada-mcp install failed — MCP features disabled" -ForegroundColor Yellow
+        Write-Host "        Try manually: $venvPython -m pip install `"$modulePath`"" -ForegroundColor DarkGray
     }
 } else {
     Write-Host "        [--] Python not found — MCP tools disabled (prompt-only mode)" -ForegroundColor Yellow

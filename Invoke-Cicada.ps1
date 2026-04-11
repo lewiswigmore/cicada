@@ -13,7 +13,7 @@
     for these sessions.
 .PARAMETER Team
     Comma-separated role names for custom team composition (1-6 agents).
-    e.g. "coder,reviewer" or "coder,coder,tester"
+    e.g. "engineer,reviewer" or "engineer,engineer,tester"
 .PARAMETER WorkingDirectory
     Starting directory. Default: current directory.
 .PARAMETER Resume
@@ -27,12 +27,15 @@
 .PARAMETER Prompt
     Shared context prepended to every agent's system prompt on launch.
     e.g. "We are working on the auth module in src/auth/"
+.PARAMETER Icebreaker
+    Add a random team warm-up prompt to kick off collaboration.
 .EXAMPLE
     cicada                              # default 4-agent team + monitor
     cicada --yolo                       # auto-approve all tools, paths, and URLs
     cicada --autopilot                  # autopilot mode (implies --yolo)
+    cicada --icebreaker                 # add a fun random warm-up prompt
     cicada --continue                   # alias for --resume
-    cicada --team "coder,reviewer"      # 2-agent team
+    cicada --team "engineer,reviewer"      # 2-agent team
     cicada --no-mcp                     # launch without any MCP servers
     cicada -Resume                      # relaunch last session
     cicada -Clear                       # clean up Cicada session data
@@ -48,6 +51,7 @@ param(
     [switch]$Yolo,
     [switch]$Autopilot,
     [string]$Prompt,
+    [switch]$Icebreaker,
     [int]$MaxCycles = 0
 )
 
@@ -73,27 +77,16 @@ if ($Clear) {
             Write-Warning "Could not parse state file: $_"
         }
         Remove-Item $stateFile -Force -ErrorAction SilentlyContinue
-        Write-Host "[CICADA] Cleared $removed session(s) and reset state." -ForegroundColor Cyan
+        Write-Host "  Cleared $removed session(s) and reset state." -ForegroundColor Cyan
     } else {
-        Write-Host "[CICADA] No state file found — nothing to clear." -ForegroundColor DarkGray
+        Write-Host "  No state file found — nothing to clear." -ForegroundColor DarkGray
     }
 
-    # Best-effort: mark running teams as exited in cicada.db
+    # Delete cicada.db — it gets recreated on next launch
     $cicadaDb = "$HOME\.cicada\cicada.db"
-    if ((Test-Path $cicadaDb) -and (Get-Command python -ErrorAction SilentlyContinue)) {
-        try {
-            $dbPath = $cicadaDb -replace '\\', '/'
-            & python -c "
-import sqlite3
-conn = sqlite3.connect('$dbPath')
-conn.execute(""UPDATE teams SET status = 'exited' WHERE status = 'running'"")
-conn.commit()
-conn.close()
-" 2>$null
-            Write-Host "[CICADA] Marked running teams as exited in cicada.db" -ForegroundColor DarkGray
-        } catch {
-            # Best-effort — ignore failures
-        }
+    if (Test-Path $cicadaDb) {
+        Remove-Item $cicadaDb -Force -ErrorAction SilentlyContinue
+        Write-Host "  Cleared cicada.db" -ForegroundColor DarkGray
     }
 
     # Clean up MCP config files
@@ -167,8 +160,9 @@ if ($Resume) {
     if ($saved.maxCycles -and $MaxCycles -eq 0) { $MaxCycles = [int]$saved.maxCycles }
     if ($saved.team) { $Team = $saved.team }
     if ($saved.prompt) { $Prompt = [string]$saved.prompt }
+    if ($saved.icebreaker -eq $true) { $Icebreaker = [switch]::new($true) }
     $WorkingDirectory = if ($saved.workDir) { $saved.workDir } else { (Get-Location).Path }
-    Write-Host "[RESUME] Relaunching session" -ForegroundColor Yellow
+    Write-Host "  Relaunching session" -ForegroundColor Yellow
 }
 
 $wd = if ($WorkingDirectory) { $WorkingDirectory } else { (Get-Location).Path }
@@ -177,6 +171,32 @@ if (-not (Test-Path $wd -PathType Container)) {
     return
 }
 $wd = (Resolve-Path $wd).Path
+
+function Get-RandomIcebreakerPrompt {
+    $prompts = @(
+        "Icebreaker mode: before implementation, each teammate should share one bold idea and one risk in a single sentence.",
+        "Icebreaker mode: agree on a codename for this task and one measurable success signal before writing code.",
+        "Icebreaker mode: each teammate should propose one tiny win we can ship quickly, then pick the best one together.",
+        "Icebreaker mode: start with a 60-second plan where each teammate states one priority and one thing to avoid.",
+        "Icebreaker mode: before coding, each teammate should post one assumption they are making so the team can challenge it."
+    )
+    return Get-Random -InputObject $prompts
+}
+
+$icebreakerPrompt = $null
+if ($saved -and $saved.icebreakerPrompt) {
+    $icebreakerPrompt = [string]$saved.icebreakerPrompt
+} elseif ($Icebreaker) {
+    $icebreakerPrompt = Get-RandomIcebreakerPrompt
+}
+
+if ($icebreakerPrompt -and (-not $Prompt -or -not ([string]$Prompt).Contains($icebreakerPrompt))) {
+    if ($Prompt) {
+        $Prompt = "$Prompt $icebreakerPrompt"
+    } else {
+        $Prompt = $icebreakerPrompt
+    }
+}
 
 if (-not (Get-Command copilot -ErrorAction SilentlyContinue)) {
     Write-Error "'copilot' not found in PATH. Install: winget install GitHub.CopilotCLI"
@@ -197,7 +217,7 @@ $allRoles = Get-Content $rolesFile -Raw | ConvertFrom-Json
 if ($Team) {
     $teamRoles = @($Team -split ',' | ForEach-Object { $_.Trim().ToLower() } | Where-Object { $_ })
 } else {
-    $teamRoles = @('coder', 'reviewer', 'tester', 'researcher')
+    $teamRoles = @('pm', 'engineer', 'reviewer', 'tester')
 }
 
 if ($teamRoles.Count -eq 0) {
@@ -209,7 +229,7 @@ if ($teamRoles.Count -gt 6) {
     return
 }
 
-# Generate aliases (auto-suffix duplicates like coder-1, coder-2)
+# Generate aliases (auto-suffix duplicates like engineer-1, engineer-2)
 $roleCounts = @{}
 foreach ($r in $teamRoles) { $roleCounts[$r] = ($roleCounts[$r] -as [int]) + 1 }
 $roleSeen = @{}
@@ -256,19 +276,14 @@ $sessionGuid = if ($saved -and $saved.sessionGuid) { [string]$saved.sessionGuid 
 
 $mcpEnabled = $false
 if (-not $NoMcp) {
-    # Resolve python command (try python, then python3; skip Store shim)
+    # Use the dedicated venv python for MCP
+    $venvPython = "$HOME\.cicada\venv\Scripts\python.exe"
     $pythonCmd = $null
-    $tryPython = Get-Command python -ErrorAction SilentlyContinue
-    if ($tryPython) {
-        $testVer = (python --version 2>&1)
-        if ($LASTEXITCODE -eq 0 -and $testVer -match 'Python \d') { $pythonCmd = $tryPython }
+    if (Test-Path $venvPython) {
+        $pythonCmd = Get-Command $venvPython -ErrorAction SilentlyContinue
     }
     if (-not $pythonCmd) {
-        $tryPython3 = Get-Command python3 -ErrorAction SilentlyContinue
-        if ($tryPython3) {
-            $testVer = (python3 --version 2>&1)
-            if ($LASTEXITCODE -eq 0 -and $testVer -match 'Python \d') { $pythonCmd = $tryPython3 }
-        }
+        Write-Host "  MCP venv not found — run Install-Cicada.ps1 to set up" -ForegroundColor Yellow
     }
     if ($pythonCmd) {
         $agentsList = ($paneConfigs | ForEach-Object { $_.Alias }) -join ','
@@ -309,7 +324,7 @@ if (-not $NoMcp) {
             Write-Warning "  $initResult"
         }
     } else {
-        Write-Host "  [MCP] Python not found — launching without MCP tools" -ForegroundColor DarkGray
+        Write-Host "  Python not found — launching without MCP tools" -ForegroundColor DarkGray
     }
 }
 
@@ -327,6 +342,8 @@ $state = @{
     autopilot   = [bool]$Autopilot
     maxCycles   = $MaxCycles
     prompt      = $Prompt
+    icebreaker  = [bool]$Icebreaker
+    icebreakerPrompt = $icebreakerPrompt
     mcpConfig   = if ($mcpEnabled) { "$cicadaDir\mcp-config-$sessionGuid-*.json" } else { $null }
     cicadaDb    = $cicadaDb
     status      = 'launching'
@@ -351,28 +368,43 @@ $script:paneIdx = 0
 function NextAgentPane {
     $cfg = $paneConfigs[$script:paneIdx]
     $script:paneIdx++
-    $cmd = "--tabColor `"$($cfg.Color)`" --title `"$($cfg.Title)`" -d `"$wd`" pwsh -NoExit -File `"$agentScript`" -Role $($cfg.Role) -Alias $($cfg.Alias) -StateFile `"$stateFile`""
+
+    # Build agent config and write to a temp JSON file to avoid WT command-line length limits
+    $agentCfg = @{
+        Role     = $cfg.Role
+        Alias    = $cfg.Alias
+        StateFile = $stateFile
+    }
     if ($mcpEnabled) {
         $agentMcpPath = "$cicadaDir\mcp-config-$sessionGuid-$($cfg.Alias).json"
-        $cmd += " -McpConfigPath `"$agentMcpPath`" -CicadaDb `"$cicadaDb`" -TeamId `"$sessionGuid`""
+        $agentCfg.McpConfigPath = $agentMcpPath
+        $agentCfg.CicadaDb = $cicadaDb
+        $agentCfg.TeamId = $sessionGuid
     }
     if ($cfg.SessionId) {
-        $cmd += " -ResumeSessionId `"$($cfg.SessionId)`""
+        $agentCfg.ResumeSessionId = $cfg.SessionId
     }
     if ($Yolo) {
-        $cmd += " -Yolo"
+        $agentCfg.Yolo = $true
     }
     if ($Autopilot) {
-        $cmd += " -Autopilot"
+        $agentCfg.Autopilot = $true
     }
     if ($MaxCycles -gt 0) {
-        $cmd += " -MaxCycles $MaxCycles"
+        $agentCfg.MaxCycles = $MaxCycles
     }
     if ($Prompt) {
-        $escaped = $Prompt -replace '"', '\"'
-        $cmd += " -Prompt `"$escaped`""
+        # Write prompt to a temp file to avoid WT/pwsh quoting issues
+        $promptFile = "$cicadaDir\prompt-$sessionGuid-$($cfg.Alias).txt"
+        $Prompt | Set-Content $promptFile -Encoding UTF8 -NoNewline
+        $agentCfg.Prompt = $promptFile
+        $agentCfg.PromptIsFile = $true
     }
-    return $cmd
+
+    $configFile = "$cicadaDir\agent-$sessionGuid-$($cfg.Alias).json"
+    $agentCfg | ConvertTo-Json -Depth 2 | Set-Content $configFile -Encoding UTF8 -NoNewline
+
+    return "--tabColor `"$($cfg.Color)`" --title `"$($cfg.Title)`" -d `"$wd`" pwsh -NoExit -File `"$agentScript`" -ConfigFile `"$configFile`""
 }
 
 # --- Build wt argument string ---
@@ -456,8 +488,11 @@ $teamList = ($paneConfigs | ForEach-Object {
     if ($_.Alias -ne $_.Role) { "$($_.Title) ($($_.Alias))" } else { $_.Title }
 }) -join ', '
 $label = if ($NoMonitor) { "$Panes agents" } else { "$Panes agents + monitor" }
-Write-Host "[CICADA] $label" -ForegroundColor Cyan
+Write-Host "  $label" -ForegroundColor Cyan
 Write-Host "  Team: $teamList" -ForegroundColor DarkGray
+if ($icebreakerPrompt) {
+    Write-Host "  Icebreaker: $icebreakerPrompt" -ForegroundColor DarkGray
+}
 if ($mcpEnabled) {
     Write-Host "  MCP: enabled (per-agent configs in $cicadaDir)" -ForegroundColor DarkGray
 }

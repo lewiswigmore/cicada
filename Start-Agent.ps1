@@ -2,10 +2,8 @@
 # Called by Invoke-Cicada.ps1 per pane to avoid wt quoting issues
 [CmdletBinding()]
 param(
-    [Parameter(Mandatory)]
-    [ValidatePattern('^[a-z][a-z0-9\-]{0,30}$')]
+    [string]$ConfigFile,
     [string]$Role,
-
     [string]$Alias,
     [string]$RolesFile,
     [string]$StateFile = "$HOME\.copilot\cicada-state.json",
@@ -16,11 +14,43 @@ param(
     [switch]$Yolo,
     [switch]$Autopilot,
     [string]$Prompt,
+    [switch]$PromptIsFile,
     [int]$MaxCycles = 0
 )
 
+# If launched via config file, read params from JSON and override
+if ($ConfigFile -and (Test-Path $ConfigFile)) {
+    $cfg = Get-Content $ConfigFile -Raw -Encoding UTF8 | ConvertFrom-Json
+    Remove-Item $ConfigFile -Force -ErrorAction SilentlyContinue
+    $Role            = $cfg.Role
+    $Alias           = $cfg.Alias
+    $RolesFile       = $cfg.RolesFile
+    $StateFile       = $cfg.StateFile
+    $McpConfigPath   = $cfg.McpConfigPath
+    $CicadaDb        = $cfg.CicadaDb
+    $TeamId          = $cfg.TeamId
+    $ResumeSessionId = $cfg.ResumeSessionId
+    $Yolo            = [bool]$cfg.Yolo
+    $Autopilot       = [bool]$cfg.Autopilot
+    $Prompt          = $cfg.Prompt
+    $PromptIsFile    = [bool]$cfg.PromptIsFile
+    $MaxCycles       = [int]($cfg.MaxCycles ?? 0)
+}
+
+if (-not $Role -or $Role -notmatch '^[a-z][a-z0-9\-]{0,30}$') {
+    Write-Host "Missing or invalid -Role. Use -ConfigFile or provide -Role directly." -ForegroundColor Red
+    return
+}
+
 if (-not $RolesFile) { $RolesFile = "$PSScriptRoot\roles.json" }
 if (-not $Alias) { $Alias = $Role }
+
+# If prompt was passed as a file path, read and clean up
+if ($PromptIsFile -and $Prompt -and (Test-Path $Prompt)) {
+    $promptFile = $Prompt
+    $Prompt = Get-Content $promptFile -Raw -Encoding UTF8
+    Remove-Item $promptFile -Force -ErrorAction SilentlyContinue
+}
 
 if (-not (Test-Path $RolesFile)) {
     Write-Host "roles.json not found: $RolesFile" -ForegroundColor Red
@@ -70,10 +100,10 @@ function Update-StateFile {
 function Update-AgentSessionBinding {
     param([string]$SessionId)
     if (-not $SessionId -or -not $TeamId -or -not $Alias -or -not $CicadaDb) { return }
-    $pythonCmd = Get-Command python -ErrorAction SilentlyContinue
-    if (-not $pythonCmd) { return }
+    $venvPy = "$HOME\.cicada\venv\Scripts\python.exe"
+    if (-not (Test-Path $venvPy)) { return }
     try {
-        & python -m cicada_mcp bind-session --team-id $TeamId --alias $Alias --session-id $SessionId --db $CicadaDb 2>$null | Out-Null
+        & $venvPy -m cicada_mcp bind-session --team-id $TeamId --alias $Alias --session-id $SessionId --db $CicadaDb 2>$null | Out-Null
     } catch {
         Write-Verbose "Could not bind session ID for ${Alias}: $_"
     }
@@ -114,17 +144,17 @@ if (Test-Path $StateFile) {
     }
 }
 
-# Assemble prompt: user context (if any) + role + teammates + coordination hint
+# Assemble prompt: role identity first, then user context, then teammates + coordination
 $parts = @()
-if ($Prompt) {
-    $parts += $Prompt
-}
 $parts += $config.prompt
+if ($Prompt) {
+    $parts += "Team objective: $Prompt"
+}
 if ($teammates) {
     $parts += "Your teammates: $($teammates -join ', ')."
 }
 if ($McpConfigPath -and (Test-Path $McpConfigPath)) {
-    $parts += "You have Cicada coordination tools for messaging teammates and managing a shared task board. After completing any task, always check get_messages(unread_only=true) and list_tasks(status='open') for new work before going idle. Claim and start any open tasks that match your role. Before declaring all work complete, call list_tasks() to confirm nothing is pending on the board."
+    $parts += "You have team coordination tools available. Check the board and your messages before starting work, claim tasks before working on them, and check again before declaring everything done."
 }
 $fullPrompt = $parts -join ' '
 
@@ -150,6 +180,103 @@ if ($McpConfigPath) {
     Write-Host "  MCP: enabled$modeSuffix" -ForegroundColor DarkGray
 }
 Write-Host ""
+
+# Non-PM agents wait so PM can populate the board first, staggered by role
+if ($Role -ne 'pm' -and $Prompt -and -not $ResumeSessionId) {
+    # Role-based stagger: engineer waits for PM, reviewer/tester wait for code
+    $waitSec = switch ($Role) {
+        'engineer'   { 15 + (Get-Random -Minimum 0 -Maximum 4) }
+        'reviewer'   { 30 + (Get-Random -Minimum 0 -Maximum 6) }
+        'tester'     { 35 + (Get-Random -Minimum 0 -Maximum 6) }
+        default      { 20 + (Get-Random -Minimum 0 -Maximum 4) }
+    }
+    $waitReason = switch ($Role) {
+        'engineer'   { 'Waiting for PM to set up the board' }
+        'reviewer'   { 'Waiting for code to review' }
+        'tester'     { 'Waiting for implementation' }
+        default      { 'Waiting for team setup' }
+    }
+
+    # Random color palette per window
+    $palettes = @(
+        @{ body = 'Green';       edge = 'DarkGreen';  wing = 'Cyan';     wingDim = 'DarkCyan'    },
+        @{ body = 'Magenta';     edge = 'DarkMagenta'; wing = 'White';   wingDim = 'DarkGray'    },
+        @{ body = 'Blue';        edge = 'DarkBlue';   wing = 'Cyan';     wingDim = 'DarkCyan'    },
+        @{ body = 'Yellow';      edge = 'DarkYellow';  wing = 'White';   wingDim = 'Gray'        },
+        @{ body = 'Cyan';        edge = 'DarkCyan';   wing = 'White';    wingDim = 'DarkGray'    },
+        @{ body = 'Red';         edge = 'DarkRed';    wing = 'Yellow';   wingDim = 'DarkYellow'  }
+    )
+    $pal = $palettes[(Get-Random -Minimum 0 -Maximum $palettes.Count)]
+    $g = $pal.body; $dg = $pal.edge; $c = $pal.wing; $dc = $pal.wingDim
+
+    # Random wing styles
+    $wingStyles = @(
+        @{ L1 = "`u{2591}`u{2592}`u{2593}`u{2592}`u{2591}"; L2 = "`u{2591}`u{2592}`u{2593}`u{2593}`u{2592}`u{2591}"; L3 = "`u{2591}`u{2592}`u{2593}`u{2592}`u{2591}"; L4 = "`u{2591}`u{2592}`u{2593}" },
+        @{ L1 = "`u{2550}`u{2550}`u{2566}`u{2550}`u{2550}"; L2 = "`u{2550}`u{2550}`u{2566}`u{2566}`u{2550}`u{2550}"; L3 = "`u{2550}`u{2550}`u{2566}`u{2550}`u{2550}"; L4 = "`u{2550}`u{2550}`u{2566}" },
+        @{ L1 = "~`u{2248}`u{2261}`u{2248}~";              L2 = "~`u{2248}`u{2261}`u{2261}`u{2248}~";              L3 = "~`u{2248}`u{2261}`u{2248}~";              L4 = "~`u{2248}`u{2261}" },
+        @{ L1 = "`u{00B7}`u{2022}`u{25CF}`u{2022}`u{00B7}"; L2 = "`u{00B7}`u{2022}`u{25CF}`u{25CF}`u{2022}`u{00B7}"; L3 = "`u{00B7}`u{2022}`u{25CF}`u{2022}`u{00B7}"; L4 = "`u{00B7}`u{2022}`u{25CF}" }
+    )
+    $ws = $wingStyles[(Get-Random -Minimum 0 -Maximum $wingStyles.Count)]
+
+    # Random leg variation
+    $legStyles = @(
+        @{ A = "`u{2590}`u{258C}"; B = "`u{2580}" },
+        @{ A = "`u{2502}`u{2502}"; B = "`u{2514}`u{2518}" },
+        @{ A = "||";               B = "`u{2227}" }
+    )
+    $leg = $legStyles[(Get-Random -Minimum 0 -Maximum $legStyles.Count)]
+
+    Write-Host ""
+    Write-Host "              " -NoNewline; Write-Host "`u{2584}" -NoNewline -ForegroundColor $dg; Write-Host "`u{2588}" -NoNewline -ForegroundColor $g; Write-Host "`u{2584}" -ForegroundColor $dg
+    Write-Host "           " -NoNewline; Write-Host "`u{2590}" -NoNewline -ForegroundColor $dg; Write-Host "`u{2588}" -NoNewline -ForegroundColor $dg; Write-Host "`u{2588}`u{2588}`u{2588}`u{2588}" -NoNewline -ForegroundColor $g; Write-Host "`u{2588}" -NoNewline -ForegroundColor $dg; Write-Host "`u{258C}" -ForegroundColor $dg
+    Write-Host "    $($ws.L1) " -NoNewline -ForegroundColor $c; Write-Host "`u{2588}" -NoNewline -ForegroundColor $dg; Write-Host "`u{2588}`u{2588}`u{2588}`u{2588}`u{2588}`u{2588}`u{2588}`u{2588}" -NoNewline -ForegroundColor $g; Write-Host "`u{2588}" -NoNewline -ForegroundColor $dg; Write-Host " $($ws.L1)" -ForegroundColor $c
+    Write-Host "  $($ws.L2)  " -NoNewline -ForegroundColor $c; Write-Host "`u{2590}" -NoNewline -ForegroundColor $dg; Write-Host "`u{2588}" -NoNewline -ForegroundColor $dg; Write-Host "`u{2588}`u{2588}`u{2588}`u{2588}`u{2588}`u{2588}" -NoNewline -ForegroundColor $g; Write-Host "`u{2588}" -NoNewline -ForegroundColor $dg; Write-Host "`u{258C}" -NoNewline -ForegroundColor $dg; Write-Host "  $($ws.L2)" -ForegroundColor $c
+    Write-Host "   $($ws.L3)   " -NoNewline -ForegroundColor $dc; Write-Host "`u{2588}" -NoNewline -ForegroundColor $dg; Write-Host "`u{2588}`u{2588}`u{2588}`u{2588}`u{2588}`u{2588}" -NoNewline -ForegroundColor $g; Write-Host "`u{2588}" -NoNewline -ForegroundColor $dg; Write-Host "   $($ws.L3)" -ForegroundColor $dc
+    Write-Host "      $($ws.L4)   " -NoNewline -ForegroundColor $dc; Write-Host "`u{2588}" -NoNewline -ForegroundColor $dg; Write-Host "`u{2588}`u{2588}`u{2588}`u{2588}" -NoNewline -ForegroundColor $g; Write-Host "`u{2588}" -NoNewline -ForegroundColor $dg; $r4 = ($ws.L4.ToCharArray() | ForEach-Object { $_ }); [array]::Reverse($r4); Write-Host "   $(-join $r4)" -ForegroundColor $dc
+    Write-Host "             " -NoNewline; Write-Host "`u{2588}" -NoNewline -ForegroundColor $dg; Write-Host "`u{2588}`u{2588}" -NoNewline -ForegroundColor $g; Write-Host "`u{2588}" -ForegroundColor $dg
+    Write-Host "             " -NoNewline; Write-Host "`u{2590}" -NoNewline -ForegroundColor $dg; Write-Host "`u{2588}`u{2588}" -NoNewline -ForegroundColor $g; Write-Host "`u{258C}" -ForegroundColor $dg
+    Write-Host "              " -NoNewline; Write-Host $leg.A -ForegroundColor $dg
+    Write-Host "               " -NoNewline; Write-Host $leg.B -ForegroundColor $dg
+    Write-Host ""
+    Write-Host "       $waitReason..." -ForegroundColor DarkGray
+    Write-Host ""
+
+    # Random bar style
+    $barWidth = 36
+    $barFillChar = @("`u{2588}", "`u{2593}", "`u{25A0}", "`u{2586}")[(Get-Random -Minimum 0 -Maximum 4)]
+    $barEmptyChar = @("`u{2500}", "`u{2508}", "`u{00B7}", "`u{2504}")[(Get-Random -Minimum 0 -Maximum 4)]
+    $barColors = @(
+        @{ full = 'Green';   mid = 'Cyan';     tip = 'DarkCyan'   },
+        @{ full = 'Magenta'; mid = 'White';     tip = 'DarkGray'   },
+        @{ full = 'Blue';    mid = 'Cyan';      tip = 'DarkCyan'   },
+        @{ full = 'Yellow';  mid = 'White';     tip = 'Gray'       },
+        @{ full = 'Cyan';    mid = 'White';     tip = 'DarkGray'   }
+    )
+    $bc = $barColors[(Get-Random -Minimum 0 -Maximum $barColors.Count)]
+    for ($i = 1; $i -le $waitSec; $i++) {
+        $filled = [math]::Floor(($i / $waitSec) * $barWidth)
+        $empty = $barWidth - $filled
+        $pct = [math]::Floor(($i / $waitSec) * 100)
+        Write-Host "`r  " -NoNewline
+        for ($j = 0; $j -lt $filled; $j++) {
+            $fromEnd = $filled - 1 - $j
+            if ($fromEnd -ge 3) {
+                Write-Host $barFillChar -NoNewline -ForegroundColor $bc.full
+            } elseif ($fromEnd -eq 2) {
+                Write-Host $barFillChar -NoNewline -ForegroundColor $bc.mid
+            } elseif ($fromEnd -eq 1) {
+                Write-Host $barFillChar -NoNewline -ForegroundColor $bc.tip
+            } else {
+                Write-Host $barFillChar -NoNewline -ForegroundColor $bc.tip
+            }
+        }
+        Write-Host ($barEmptyChar * $empty) -NoNewline -ForegroundColor DarkGray
+        Write-Host " $pct%" -NoNewline -ForegroundColor DarkGray
+        Start-Sleep -Seconds 1
+    }
+    Write-Host ""
+    Write-Host ""
+}
 
 # Snapshot session IDs before launch for diff-based detection
 $sessionDir = "$HOME\.copilot\session-state"
@@ -192,7 +319,8 @@ try {
                                 $writer.Dispose()
                                 if ($ctx.TeamId -and $ctx.CicadaDb) {
                                     try {
-                                        & python -m cicada_mcp bind-session --team-id $ctx.TeamId --alias $ctx.Alias --session-id $newId --db $ctx.CicadaDb 2>$null | Out-Null
+                                        $vPy = "$($env:USERPROFILE)\.cicada\venv\Scripts\python.exe"
+                                        & $vPy -m cicada_mcp bind-session --team-id $ctx.TeamId --alias $ctx.Alias --session-id $newId --db $ctx.CicadaDb 2>$null | Out-Null
                                     } catch {}
                                 }
                                 $ctx.Bound = $true
@@ -233,10 +361,10 @@ $cooldownSeconds = 3
 
 function Get-PendingSummary {
     if (-not $CicadaDb -or -not $TeamId -or -not $Alias) { return $null }
-    $pythonCmd = Get-Command python -ErrorAction SilentlyContinue
-    if (-not $pythonCmd) { return $null }
+    $venvPy = "$HOME\.cicada\venv\Scripts\python.exe"
+    if (-not (Test-Path $venvPy)) { return $null }
     try {
-        $raw = & python -m cicada_mcp check-pending --team-id $TeamId --alias $Alias --db $CicadaDb 2>$null
+        $raw = & $venvPy -m cicada_mcp check-pending --team-id $TeamId --alias $Alias --db $CicadaDb 2>$null
         if ($raw) { return ($raw | ConvertFrom-Json) }
     } catch {}
     return $null
@@ -324,7 +452,7 @@ do {
     $pending = Get-PendingSummary
     if (-not $pending) { break }
 
-    $totalPending = $pending.unread + $pending.open_tasks + $pending.claimed_tasks
+    $totalPending = $pending.unread + $pending.open_tasks + $pending.in_progress_tasks + ($pending.rework_tasks ?? 0)
     if ($totalPending -eq 0) {
         Write-Host "  [$Alias] No pending work on the board. Cycle complete." -ForegroundColor DarkGray
         break
@@ -334,8 +462,9 @@ do {
     $nudgeParts = @()
     if ($pending.unread -gt 0) { $nudgeParts += "$($pending.unread) unread message$(if ($pending.unread -ne 1) {'s'})" }
     if ($pending.open_tasks -gt 0) { $nudgeParts += "$($pending.open_tasks) open task$(if ($pending.open_tasks -ne 1) {'s'})" }
-    if ($pending.claimed_tasks -gt 0) { $nudgeParts += "$($pending.claimed_tasks) task$(if ($pending.claimed_tasks -ne 1) {'s'}) claimed by you" }
-    $script:nudgePrompt = "You have $($nudgeParts -join ' and ') on the board. Check get_messages(unread_only=true) and list_tasks(status='open') to continue working."
+    if ($pending.in_progress_tasks -gt 0) { $nudgeParts += "$($pending.in_progress_tasks) task$(if ($pending.in_progress_tasks -ne 1) {'s'}) in progress" }
+    if (($pending.rework_tasks ?? 0) -gt 0) { $nudgeParts += "$($pending.rework_tasks) task$(if ($pending.rework_tasks -ne 1) {'s'}) needs rework" }
+    $script:nudgePrompt = "You have $($nudgeParts -join ' and ') on the board. Check your messages and the task board to continue working."
 
     Write-Host "  [$Alias] Pending work detected ($($nudgeParts -join ', ')). Re-prompting in ${cooldownSeconds}s... (cycle $cycle)" -ForegroundColor Yellow
     Start-Sleep -Seconds $cooldownSeconds
