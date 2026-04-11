@@ -11,9 +11,9 @@ MCP-powered coordination, a shared task board, message passing, and a live
 monitor sidebar.
 
 <p align="center">
-  <img src="cicada-agents.png" alt="Cicada agents coordinating on a task" width="900">
+  <img src="images/demo.gif" alt="Cicada demo — agents coordinating on a Netflix clone build" width="900">
   <br>
-  <em>Four agents collaborating on <a href="https://github.com/lewiswigmore/cicada/issues/1">Issue #1</a> — task board, messaging, and code review in action.</em>
+  <em>Four agents building a Netflix clone — task board, messaging, needs-rework cycle, and live monitor.</em>
 </p>
 
 ---
@@ -76,17 +76,17 @@ prerequisite via the CLI, authentication, troubleshooting, and edge cases.
 cicada
 ```
 
-Opens Windows Terminal with four agents (Coder, Reviewer, Tester, Researcher)
+Opens Windows Terminal with four agents (PM, Engineer, Reviewer, Tester)
 in a 2x2 grid plus a monitor sidebar on the right.
 
 ### Custom team
 
 ```powershell
-cicada --team "coder,reviewer"
+cicada --team "engineer,reviewer"
 ```
 
 Pick 1-6 roles from `roles.json`. Duplicate roles get an automatic suffix
-(`coder-1`, `coder-2`). The layout adapts to the team size.
+(`engineer-1`, `engineer-2`). The layout adapts to the team size.
 
 ### Resume or continue a session
 
@@ -105,10 +105,12 @@ Cicada also auto-detects dead sessions and offers to resume on next launch.
 ```powershell
 cicada --yolo
 cicada --autopilot
+cicada --icebreaker
 ```
 
 - `--yolo` enables Copilot's full permission mode
 - `--autopilot` enables Copilot autopilot continuation mode and also implies `--yolo`
+- `--icebreaker` adds a random team warm-up prompt to start collaboration
 
 ### Clean up
 
@@ -132,6 +134,7 @@ cicada [options]
   --no-mcp                Disable Cicada MCP and block other Copilot MCP servers
   --yolo                  Auto-approve all tools, paths, and URLs
   --autopilot             Enable Copilot autopilot mode (implies --yolo)
+  --icebreaker            Add a random team warm-up prompt at launch
   --prompt <text>         Shared context for all agents on launch
   --team <roles>          Custom team (comma-separated, 1-6 roles)
   -d, --directory <path>  Override working directory
@@ -142,7 +145,8 @@ shared Cicada coordination server, not your other global Copilot MCP servers.
 The `--no-mcp` flag disables Cicada's MCP injection as well, leaving the session
 without MCP servers. The `--yolo` flag extends approvals to all tools, paths,
 and URLs. The `--autopilot` flag enables Copilot's autopilot continuation mode
-and also turns on `--yolo`.
+and also turns on `--yolo`. The `--icebreaker` flag adds a random kickoff prompt
+so teams align before implementation starts.
 
 ## Trust model
 
@@ -158,10 +162,11 @@ This keeps install and update behavior auditable and avoids mutable remote code 
 
 | Role       | Title      | Focus                                          |
 |------------|------------|-------------------------------------------------|
-| coder      | Coder      | Implementation -- writing and fixing code       |
-| reviewer   | Reviewer   | Code review -- bugs, security, best practices   |
-| tester     | Tester     | Testing -- edge cases, integration, coverage    |
-| researcher | Researcher | Research -- architecture, patterns, dependencies|
+| pm         | PM         | Coordination -- planning, delegation, tracking  |
+| engineer   | Engineer   | Implementation -- building assigned work        |
+| reviewer   | Reviewer   | Review -- quality, correctness, completeness    |
+| tester     | Tester     | Testing -- validation, defect reporting         |
+| researcher | Researcher | Research -- investigation, analysis, insights   |
 
 Roles are defined in `roles.json`. Edit prompts, colors, and titles there.
 
@@ -175,8 +180,8 @@ database (`~/.cicada/cicada.db`, WAL mode for concurrent access):
 - `whoami` -- identity, teammates, unread count
 - `list_team` -- full team roster and status
 - `send_message` / `get_messages` -- direct or broadcast messages
-- `list_tasks` / `create_task` / `claim_task` / `update_task` -- shared task board
-- `get_agent_activity` -- summarized recent turns from a teammate
+- `list_tasks` / `create_task` / `claim_task` / `update_task` -- shared task board with needs-rework cycle
+- `get_agent_activity` -- recent task events and messages from a teammate
 
 Without Python, agents launch in prompt-only mode with team context in the
 system prompt. MCP features are disabled but everything else works. Cicada also
@@ -195,13 +200,19 @@ Adaptive grid based on team size, with a monitor sidebar on the right:
 
 ```
 +----------+----------+--------+
-|  Coder   | Reviewer |Monitor |
+|    PM    | Engineer |Monitor |
 +----------+----------+        |
-|  Tester  |Researcher|        |
+| Reviewer |  Tester  |        |
 +----------+----------+--------+
 ```
 
 Layouts for 1-6 agents are built-in. Zoom any pane with `Ctrl+Shift+Z`.
+
+<p align="center">
+  <img src="images/demo-01.png" alt="Cicada launch — staggered agent startup with role-based wait times" width="900">
+  <br>
+  <em>Staggered launch — each agent waits a role-appropriate interval before joining, with randomized loading visuals per pane.</em>
+</p>
 
 ---
 
