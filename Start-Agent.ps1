@@ -409,9 +409,11 @@ do {
     } else {
         # Re-prompt cycle: resume existing session with nudge
         $boundSid = Get-BoundSessionId
-        if ($boundSid) {
-            $copilotArgs += "--resume=$boundSid"
+        if (-not $boundSid) {
+            Write-Warning "[$Alias] No bound session ID for re-prompt cycle $cycle — skipping to avoid starting a new session."
+            break
         }
+        $copilotArgs += "--resume=$boundSid"
         $copilotArgs += '-i', $script:nudgePrompt
     }
 

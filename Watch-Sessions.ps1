@@ -83,14 +83,21 @@ try:
         ).fetchall()
         messages = [dict(r) for r in rows]
 
-    # Task summary
+    # Task summary (recent 10 for display)
     tasks = []
+    task_counts = {}
     if team_id:
         rows = conn.execute(
             "SELECT id, title, status, claimed_by, created_by FROM tasks WHERE team_id = ? ORDER BY created_at DESC LIMIT 10",
             (team_id,)
         ).fetchall()
         tasks = [dict(r) for r in rows]
+        # Aggregate counts across ALL tasks (not limited)
+        count_rows = conn.execute(
+            "SELECT status, COUNT(*) as cnt FROM tasks WHERE team_id = ? GROUP BY status",
+            (team_id,)
+        ).fetchall()
+        task_counts = {r['status']: r['cnt'] for r in count_rows}
 
     # Recent activity from task_events (last 5)
     activity = []
@@ -137,7 +144,7 @@ try:
             pass
 
     conn.close()
-    print(json.dumps({"messages": messages, "tasks": tasks, "unread": unread, "activity": activity, "agent_status": agent_status}))
+    print(json.dumps({"messages": messages, "tasks": tasks, "task_counts": task_counts, "unread": unread, "activity": activity, "agent_status": agent_status}))
 except Exception as e:
     print(json.dumps({"messages": [], "tasks": [], "unread": {}, "activity": [], "error": str(e)}))
 '@
@@ -427,10 +434,12 @@ function Show-Monitor {
                 $totalUnread += $boardData.unread.$key
             }
         }
-        $taskOpen = @($boardData.tasks | Where-Object { $_.status -eq 'open' }).Count
-        $taskInProgress = @($boardData.tasks | Where-Object { $_.status -eq 'in-progress' }).Count
-        $taskDone = @($boardData.tasks | Where-Object { $_.status -eq 'done' }).Count
-        $taskRework = @($boardData.tasks | Where-Object { $_.status -eq 'needs-rework' }).Count
+        # Use aggregate counts (accurate across all tasks, not just the LIMIT 10 display list)
+        $tc = $boardData.task_counts
+        $taskOpen = if ($tc -and $tc.open) { $tc.open } else { 0 }
+        $taskInProgress = if ($tc -and $tc.'in-progress') { $tc.'in-progress' } else { 0 }
+        $taskDone = if ($tc -and $tc.done) { $tc.done } else { 0 }
+        $taskRework = if ($tc -and $tc.'needs-rework') { $tc.'needs-rework' } else { 0 }
 
         if ($totalUnread -gt 0) {
             # Show per-agent unread
@@ -444,13 +453,14 @@ function Show-Monitor {
             Write-Host " `u{1F4AC} $totalUnread unread$unreadStr" -ForegroundColor White
         }
 
-        if ($boardData.tasks.Count -gt 0) {
+        $taskTotal = $taskOpen + $taskInProgress + $taskDone + $taskRework
+        if ($taskTotal -gt 0) {
             $taskParts = @()
             if ($taskOpen -gt 0) { $taskParts += "$taskOpen open" }
             if ($taskInProgress -gt 0) { $taskParts += "$taskInProgress in-progress" }
             if ($taskRework -gt 0) { $taskParts += "$taskRework needs-rework" }
             if ($taskDone -gt 0) { $taskParts += "$taskDone done" }
-            Write-Host " Tasks: $($boardData.tasks.Count) ($($taskParts -join ', '))" -ForegroundColor White
+            Write-Host " Tasks: $taskTotal ($($taskParts -join ', '))" -ForegroundColor White
         }
 
         # Recent messages (max 3)

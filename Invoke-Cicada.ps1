@@ -278,6 +278,10 @@ $mcpConfigPath = $null
 $cicadaDb = "$HOME\.cicada\cicada.db"
 $sessionGuid = if ($saved -and $saved.sessionGuid) { [string]$saved.sessionGuid } else { [guid]::NewGuid().ToString('N').Substring(0, 12) }
 
+# Ensure ~/.cicada/ exists (needed for config/prompt files even without MCP)
+$cicadaDir = "$HOME\.cicada"
+if (-not (Test-Path $cicadaDir)) { New-Item $cicadaDir -ItemType Directory -Force | Out-Null }
+
 $mcpEnabled = $false
 if (-not $NoMcp) {
     # Use the dedicated venv python for MCP
@@ -291,10 +295,6 @@ if (-not $NoMcp) {
     }
     if ($pythonCmd) {
         $agentsList = ($paneConfigs | ForEach-Object { $_.Alias }) -join ','
-
-        # Ensure ~/.cicada/ exists
-        $cicadaDir = "$HOME\.cicada"
-        if (-not (Test-Path $cicadaDir)) { New-Item $cicadaDir -ItemType Directory -Force | Out-Null }
 
         # Initialize team in cicada.db via Python MCP package
         $initResult = & $pythonCmd.Source -m cicada_mcp init --team-id $sessionGuid --work-dir $wd --agents $agentsList --db $cicadaDb 2>&1

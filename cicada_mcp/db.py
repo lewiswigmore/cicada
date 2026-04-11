@@ -263,7 +263,7 @@ def get_open_task_count(db: sqlite3.Connection, team_id: str) -> int:
 def get_pending_summary(
     db: sqlite3.Connection, team_id: str, alias: str
 ) -> dict:
-    """Return pending work counts for an agent: unread messages, open/needs-rework tasks, in-progress tasks."""
+    """Return pending work counts for an agent: unread messages, open tasks, needs-rework tasks, and in-progress tasks."""
     unread = get_unread_count(db, team_id, alias)
     open_tasks = get_open_task_count(db, team_id)
     row = db.execute(
@@ -387,8 +387,8 @@ def update_task(
     if not row:
         return {"success": False, "error": "Task not found"}
 
-    # needs-rework clears claimed_by so the task appears on the board for re-claim
-    if status == "needs-rework":
+    # needs-rework and open both clear claimed_by so the task appears on the board for (re-)claim
+    if status in ("needs-rework", "open"):
         db.execute(
             "UPDATE tasks SET status = ?, claimed_by = NULL, updated_at = datetime('now') WHERE id = ?",
             (status, task_id),
