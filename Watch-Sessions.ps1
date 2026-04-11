@@ -146,7 +146,7 @@ try:
     conn.close()
     print(json.dumps({"messages": messages, "tasks": tasks, "task_counts": task_counts, "unread": unread, "activity": activity, "agent_status": agent_status}))
 except Exception as e:
-    print(json.dumps({"messages": [], "tasks": [], "unread": {}, "activity": [], "error": str(e)}))
+    print(json.dumps({"messages": [], "tasks": [], "task_counts": {}, "unread": {}, "activity": [], "error": str(e)}))
 '@
 $boardQueryScriptPath = "$env:TEMP\cicada_board_query.py"
 Set-Content $boardQueryScriptPath $boardQueryScript -Encoding UTF8
@@ -450,7 +450,7 @@ function Show-Monitor {
                 }
             }
             $unreadStr = if ($unreadParts.Count -gt 0) { " ($($unreadParts -join ', '))" } else { "" }
-            Write-Host " `u{1F4AC} $totalUnread unread$unreadStr" -ForegroundColor White
+            Write-Host " Unread: $totalUnread$unreadStr" -ForegroundColor White
         }
 
         $taskTotal = $taskOpen + $taskInProgress + $taskDone + $taskRework
