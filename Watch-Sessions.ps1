@@ -154,10 +154,14 @@ Set-Content $boardQueryScriptPath $boardQueryScript -Encoding UTF8
 function Invoke-BatchQuery {
     param([array]$Queries)
     $venvPy = "$HOME\.cicada\venv\Scripts\python.exe"
-    if (-not (Test-Path $venvPy)) { return @() }
+    $py = if (Test-Path $venvPy) { $venvPy }
+         elseif (Get-Command python3 -ErrorAction SilentlyContinue) { 'python3' }
+         elseif (Get-Command python -ErrorAction SilentlyContinue) { 'python' }
+         else { $null }
+    if (-not $py) { return @() }
     try {
         $spec = $Queries | ConvertTo-Json -Depth 3 -Compress
-        $raw = & $venvPy $queryScriptPath $spec 2>$null
+        $raw = & $py $queryScriptPath $spec 2>$null
         if ($raw) { return ($raw | ConvertFrom-Json) }
     } catch {}
     return @()
@@ -166,9 +170,13 @@ function Invoke-BatchQuery {
 function Invoke-BoardQuery {
     param([string]$DbPath, [string]$TeamId)
     $venvPy = "$HOME\.cicada\venv\Scripts\python.exe"
-    if (-not (Test-Path $venvPy)) { return @{ messages = @(); tasks = @(); unread = @{} } }
+    $py = if (Test-Path $venvPy) { $venvPy }
+         elseif (Get-Command python3 -ErrorAction SilentlyContinue) { 'python3' }
+         elseif (Get-Command python -ErrorAction SilentlyContinue) { 'python' }
+         else { $null }
+    if (-not $py) { return @{ messages = @(); tasks = @(); unread = @{} } }
     try {
-        $raw = & $venvPy $boardQueryScriptPath $DbPath $TeamId 2>$null
+        $raw = & $py $boardQueryScriptPath $DbPath $TeamId 2>$null
         if ($raw) { return ($raw | ConvertFrom-Json) }
     } catch {}
     return @{ messages = @(); tasks = @(); unread = @{} }

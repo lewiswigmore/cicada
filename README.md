@@ -134,7 +134,7 @@ cicada [options]
   --no-mcp                Disable Cicada MCP and block other Copilot MCP servers
   --yolo                  Auto-approve all tools, paths, and URLs
   --autopilot             Enable Copilot autopilot mode (implies --yolo)
-  --max-cycles <n>        Re-prompt idle agents up to n times (requires --autopilot)
+  --max-cycles <n>        Re-prompt idle agents up to n times (requires MCP; --autopilot defaults to unlimited)
   --icebreaker            Add a random team warm-up prompt at launch
   --prompt <text>         Shared context for all agents on launch
   --team <roles>          Custom team (comma-separated, 1-6 roles)
