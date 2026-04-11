@@ -319,7 +319,7 @@ try {
                                 $writer.Dispose()
                                 if ($ctx.TeamId -and $ctx.CicadaDb) {
                                     try {
-                                        $vPy = "$($env:USERPROFILE)\.cicada\venv\Scripts\python.exe"
+                                        $vPy = Join-Path $HOME '.cicada\venv\Scripts\python.exe'
                                         & $vPy -m cicada_mcp bind-session --team-id $ctx.TeamId --alias $ctx.Alias --session-id $newId --db $ctx.CicadaDb 2>$null | Out-Null
                                     } catch {}
                                 }

@@ -296,7 +296,7 @@ cicada --doctor
 This checks every dependency and reports status. A healthy output looks like:
 
 ```
-  Cicada Doctor v0.1.1
+  Cicada Doctor v0.1.2
   Checking dependencies...
 
   [OK] pwsh 7.x.x
@@ -304,9 +304,9 @@ This checks every dependency and reports status. A healthy output looks like:
   [OK] wt.exe
   [OK] copilot 1.x.x
   [OK] python 3.12.x
-  [OK] cicada-mcp 0.1.1
+  [OK] cicada-mcp 0.1.2
   [OK] MCP server importable
-  [OK] roles.json (4 roles)
+  [OK] roles.json (5 roles)
 
   All checks passed.
 ```

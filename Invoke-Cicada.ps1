@@ -82,10 +82,14 @@ if ($Clear) {
         Write-Host "  No state file found — nothing to clear." -ForegroundColor DarkGray
     }
 
-    # Delete cicada.db — it gets recreated on next launch
+    # Delete cicada.db + WAL/SHM sidecar files — they get recreated on next launch
     $cicadaDb = "$HOME\.cicada\cicada.db"
-    if (Test-Path $cicadaDb) {
-        Remove-Item $cicadaDb -Force -ErrorAction SilentlyContinue
+    foreach ($dbFile in @($cicadaDb, "$cicadaDb-wal", "$cicadaDb-shm")) {
+        if (Test-Path $dbFile) {
+            Remove-Item $dbFile -Force -ErrorAction SilentlyContinue
+        }
+    }
+    if (-not (Test-Path $cicadaDb)) {
         Write-Host "  Cleared cicada.db" -ForegroundColor DarkGray
     }
 

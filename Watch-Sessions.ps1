@@ -319,7 +319,7 @@ function Show-Monitor {
         return
     }
 
-    # ── Batch DB query: stats+latest (CTE) + activity feed from Copilot session-store ──
+    # ── Batch DB query: per-agent stats + latest turn from Copilot session-store ──
     $sessionIds = @($state.panes | Where-Object { $_.sessionId } | ForEach-Object { $_.sessionId })
     $agentData = @{}
 
@@ -450,7 +450,7 @@ function Show-Monitor {
             if ($taskInProgress -gt 0) { $taskParts += "$taskInProgress in-progress" }
             if ($taskRework -gt 0) { $taskParts += "$taskRework needs-rework" }
             if ($taskDone -gt 0) { $taskParts += "$taskDone done" }
-            Write-Host " `u{1F4CB} $($boardData.tasks.Count) tasks ($($taskParts -join ', '))" -ForegroundColor White
+            Write-Host " Tasks: $($boardData.tasks.Count) ($($taskParts -join ', '))" -ForegroundColor White
         }
 
         # Recent messages (max 3)
@@ -480,6 +480,10 @@ function Show-Monitor {
         foreach ($p in $state.panes) {
             # Determine if this agent is idle
             $agentStatus = "launching"
+            $cicadaStatus = $null
+            if ($boardData.agent_status -and $boardData.agent_status.PSObject.Properties[$p.alias]) {
+                $cicadaStatus = $boardData.agent_status.($p.alias)
+            }
             if ($p.sessionId -and $agentData.ContainsKey($p.sessionId)) {
                 $d = $agentData[$p.sessionId]
                 $agentAge = Format-Ago $d.last_active
@@ -488,6 +492,11 @@ function Show-Monitor {
                               else { "idle" }
             } elseif ($p.sessionId) {
                 $agentStatus = "waiting"
+            }
+            # Fallback to cicada DB when session-store has no data
+            if ($cicadaStatus -and ($agentStatus -eq "launching" -or $agentStatus -eq "waiting" -or ($agentStatus -eq "idle" -and $cicadaStatus.events -gt 0))) {
+                $cicadaAge = Format-Ago $cicadaStatus.last_event
+                $agentStatus = if ($cicadaAge -eq "now" -or $cicadaAge -eq "1m") { "active" } else { "idle" }
             }
 
             if ($agentStatus -ne "idle") { continue }
@@ -502,7 +511,7 @@ function Show-Monitor {
             if ($taskOpen -gt 0) { $pendingParts += "$taskOpen open task$(if ($taskOpen -ne 1) {'s'})" }
             if ($taskRework -gt 0) { $pendingParts += "$taskRework needs-rework" }
             if ($pendingParts.Count -gt 0) {
-                $idleAlerts += " `u{26A0} $($p.alias) idle with $($pendingParts -join ', ')"
+                $idleAlerts += " [!] $($p.alias) idle with $($pendingParts -join ', ')"
             }
         }
         if ($idleAlerts.Count -gt 0) {

@@ -22,7 +22,7 @@
             Tags         = @('copilot', 'terminal', 'agents', 'windows-terminal', 'multi-agent', 'orchestrator', 'mcp')
             LicenseUri   = 'https://github.com/lewiswigmore/cicada/blob/master/LICENSE'
             ProjectUri   = 'https://github.com/lewiswigmore/cicada'
-            ReleaseNotes = 'v0.1.1: Dedicated MCP venv, improved tool descriptions, PM role, autopilot re-prompt loop, and prompt cleanup.'
+            ReleaseNotes = 'v0.1.2: Needs-rework status, activity tracking, config-file launch, staggered loading, and bug fixes.'
         }
     }
 }
