@@ -421,6 +421,44 @@ function Show-Monitor {
         }
     }
 
+    # ── Idle alerts: warn when agents are idle with pending work ──
+    if ($boardData) {
+        $idleAlerts = @()
+        foreach ($p in $state.panes) {
+            # Determine if this agent is idle
+            $agentStatus = "launching"
+            if ($p.sessionId -and $agentData.ContainsKey($p.sessionId)) {
+                $d = $agentData[$p.sessionId]
+                $agentAge = Format-Ago $d.last_active
+                $agentStatus = if ($d.turns -eq 0) { "waiting" }
+                              elseif ($agentAge -eq "now" -or $agentAge -eq "1m") { "active" }
+                              else { "idle" }
+            } elseif ($p.sessionId) {
+                $agentStatus = "waiting"
+            }
+
+            if ($agentStatus -ne "idle") { continue }
+
+            # Check if this agent has pending work
+            $agentUnread = 0
+            if ($boardData.unread -and $boardData.unread.PSObject.Properties[$p.alias]) {
+                $agentUnread = $boardData.unread.($p.alias)
+            }
+            $pendingParts = @()
+            if ($agentUnread -gt 0) { $pendingParts += "$agentUnread unread" }
+            if ($taskOpen -gt 0) { $pendingParts += "$taskOpen open task$(if ($taskOpen -ne 1) {'s'})" }
+            if ($pendingParts.Count -gt 0) {
+                $idleAlerts += " `u{26A0} $($p.alias) idle with $($pendingParts -join ', ')"
+            }
+        }
+        if ($idleAlerts.Count -gt 0) {
+            Write-Host ""
+            foreach ($alert in $idleAlerts) {
+                Write-Host $alert -ForegroundColor Yellow
+            }
+        }
+    }
+
     Write-Host ""
 
     # ── Activity feed: recent completed turns ──

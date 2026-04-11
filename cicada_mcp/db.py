@@ -249,6 +249,21 @@ def get_open_task_count(db: sqlite3.Connection, team_id: str) -> int:
     return row["cnt"] if row else 0
 
 
+def get_pending_summary(
+    db: sqlite3.Connection, team_id: str, alias: str
+) -> dict:
+    """Return pending work counts for an agent: unread messages, open tasks, claimed tasks."""
+    unread = get_unread_count(db, team_id, alias)
+    open_tasks = get_open_task_count(db, team_id)
+    row = db.execute(
+        "SELECT COUNT(*) as cnt FROM tasks "
+        "WHERE team_id = ? AND status = 'claimed' AND claimed_by = ?",
+        (team_id, alias),
+    ).fetchone()
+    claimed_tasks = row["cnt"] if row else 0
+    return {"unread": unread, "open_tasks": open_tasks, "claimed_tasks": claimed_tasks}
+
+
 def create_task(
     db: sqlite3.Connection,
     team_id: str,

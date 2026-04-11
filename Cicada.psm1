@@ -47,6 +47,7 @@ function Show-CicadaHelp {
     Write-Host "    --no-mcp                Disable Cicada MCP and block other Copilot MCP servers"
     Write-Host "    --yolo                  Auto-approve all tools, paths, and URLs"
     Write-Host "    --autopilot             Enable Copilot autopilot mode (implies --yolo)"
+    Write-Host "    --max-cycles <N>        Max re-prompt cycles per agent (default: 5, autopilot: unlimited)"
     Write-Host "    --prompt <text>         Shared context for all agents on launch"
     Write-Host "                            e.g. --prompt `"We are working on the API`""
     Write-Host "    --team <roles>          Custom team composition (comma-separated)"
@@ -473,6 +474,22 @@ function Invoke-Cicada {
         elseif ($lower -eq '--autopilot') {
             $params['Autopilot'] = $true
             $params['Yolo'] = $true
+        }
+        elseif ($lower -eq '--max-cycles') {
+            $i++
+            # 0 = sentinel for smart default (resolved in Start-Agent.ps1: 5 normally, unlimited in autopilot)
+            if ($i -lt $args.Count) {
+                $val = $args[$i] -as [int]
+                if ($val -and $val -gt 0) {
+                    $params['MaxCycles'] = $val
+                } else {
+                    Write-Host "  --max-cycles requires a positive integer." -ForegroundColor Red
+                    return
+                }
+            } else {
+                Write-Host "  --max-cycles requires a number argument." -ForegroundColor Red
+                return
+            }
         }
         elseif ($lower -eq '--prompt') {
             $i++

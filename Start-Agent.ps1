@@ -15,7 +15,8 @@ param(
     [string]$ResumeSessionId,
     [switch]$Yolo,
     [switch]$Autopilot,
-    [string]$Prompt
+    [string]$Prompt,
+    [int]$MaxCycles = 0
 )
 
 if (-not $RolesFile) { $RolesFile = "$PSScriptRoot\roles.json" }
@@ -123,7 +124,7 @@ if ($teammates) {
     $parts += "Your teammates: $($teammates -join ', ')."
 }
 if ($McpConfigPath -and (Test-Path $McpConfigPath)) {
-    $parts += "You have Cicada coordination tools for messaging teammates and managing a shared task board. Do not use them until you have been given a task."
+    $parts += "You have Cicada coordination tools for messaging teammates and managing a shared task board. After completing any task, always check get_messages(unread_only=true) and list_tasks(status='open') for new work before going idle. Claim and start any open tasks that match your role. Before declaring all work complete, call list_tasks() to confirm nothing is pending on the board."
 }
 $fullPrompt = $parts -join ' '
 
@@ -217,48 +218,130 @@ if ($McpConfigPath -and (Test-Path $McpConfigPath)) {
     $env:CICADA_DB = $CicadaDb
 }
 
-# Launch copilot with team-aware prompt
-$copilotArgs = @(Get-CopilotMcpIsolationArgs)
-if ($McpConfigPath -and (Test-Path $McpConfigPath)) {
-    $copilotArgs += '--additional-mcp-config', "@$McpConfigPath"
-    if (-not $effectiveYolo) {
-        # Auto-approve Cicada coordination tools so agents don't need manual approval
-        $copilotArgs += "--allow-tool=cicada"
-    }
-}
-if ($effectiveYolo) {
-    $copilotArgs += '--yolo'
-}
-if ($Autopilot) {
-    $copilotArgs += '--autopilot'
-}
-if ($ResumeSessionId) {
-    Update-AgentSessionBinding -SessionId $ResumeSessionId
-    $copilotArgs += "--resume=$ResumeSessionId"
+# Resolve effective max cycles: 0 = smart default (5 normally, unlimited in autopilot)
+$mcpActive = $McpConfigPath -and (Test-Path $McpConfigPath)
+$effectiveMaxCycles = if ($MaxCycles -gt 0) {
+    $MaxCycles
+} elseif ($Autopilot -and $mcpActive) {
+    [int]::MaxValue
+} elseif ($mcpActive) {
+    5
 } else {
-    $copilotArgs += '-i', $fullPrompt
+    1
 }
-copilot @copilotArgs
+$cooldownSeconds = 3
 
-# Cleanup watcher
-if ($registration) { Unregister-Event -SubscriptionId $registration.Id -ErrorAction SilentlyContinue }
-if ($watcher) { $watcher.Dispose() }
+function Get-PendingSummary {
+    if (-not $CicadaDb -or -not $TeamId -or -not $Alias) { return $null }
+    $pythonCmd = Get-Command python -ErrorAction SilentlyContinue
+    if (-not $pythonCmd) { return $null }
+    try {
+        $raw = & python -m cicada_mcp check-pending --team-id $TeamId --alias $Alias --db $CicadaDb 2>$null
+        if ($raw) { return ($raw | ConvertFrom-Json) }
+    } catch {}
+    return $null
+}
 
-# Fallback: if watcher missed it, do post-exit diff detection with file locking
-if (-not $ResumeSessionId -and (Test-Path $sessionDir) -and (Test-Path $StateFile)) {
-    $after = @(Get-ChildItem $sessionDir -Directory | ForEach-Object { $_.Name })
-    $newSessions = $after | Where-Object { $_ -notin $before }
-    if ($newSessions) {
-        $sessionId = ($newSessions | Sort-Object | Select-Object -Last 1)
-        Update-StateFile -Path $StateFile -Mutator {
-            param($s)
-            $pane = $s.panes | Where-Object { $_.alias -eq $Alias } | Select-Object -First 1
-            if ($pane -and -not $pane.sessionId) {
-                $pane | Add-Member -NotePropertyName 'sessionId' -NotePropertyValue $sessionId -Force
-                return $true
-            }
-            return $false
+function Get-BoundSessionId {
+    if (-not (Test-Path $StateFile)) { return $null }
+    try {
+        $s = Get-Content $StateFile -Raw | ConvertFrom-Json
+        $pane = $s.panes | Where-Object { $_.alias -eq $Alias } | Select-Object -First 1
+        if ($pane -and $pane.sessionId) { return [string]$pane.sessionId }
+    } catch {}
+    return $null
+}
+
+# Launch copilot with team-aware prompt (with re-prompt loop for pending work)
+$cycle = 0
+$isFirstCycle = $true
+do {
+    $copilotArgs = @(Get-CopilotMcpIsolationArgs)
+    if ($McpConfigPath -and (Test-Path $McpConfigPath)) {
+        $copilotArgs += '--additional-mcp-config', "@$McpConfigPath"
+        if (-not $effectiveYolo) {
+            # Auto-approve Cicada coordination tools so agents don't need manual approval
+            $copilotArgs += "--allow-tool=cicada"
         }
-        Update-AgentSessionBinding -SessionId $sessionId
     }
+    if ($effectiveYolo) {
+        $copilotArgs += '--yolo'
+    }
+    if ($Autopilot) {
+        $copilotArgs += '--autopilot'
+    }
+
+    if ($isFirstCycle) {
+        if ($ResumeSessionId) {
+            Update-AgentSessionBinding -SessionId $ResumeSessionId
+            $copilotArgs += "--resume=$ResumeSessionId"
+        } else {
+            $copilotArgs += '-i', $fullPrompt
+        }
+    } else {
+        # Re-prompt cycle: resume existing session with nudge
+        $boundSid = Get-BoundSessionId
+        if ($boundSid) {
+            $copilotArgs += "--resume=$boundSid"
+        }
+        $copilotArgs += '-i', $script:nudgePrompt
+    }
+
+    copilot @copilotArgs
+    $isFirstCycle = $false
+
+    # ── Post-exit: session binding (first cycle only for watcher) ──
+    if ($cycle -eq 0) {
+        # Cleanup watcher
+        if ($registration) { Unregister-Event -SubscriptionId $registration.Id -ErrorAction SilentlyContinue }
+        if ($watcher) { $watcher.Dispose() }
+
+        # Fallback: if watcher missed it, do post-exit diff detection with file locking
+        if (-not $ResumeSessionId -and (Test-Path $sessionDir) -and (Test-Path $StateFile)) {
+            $after = @(Get-ChildItem $sessionDir -Directory | ForEach-Object { $_.Name })
+            $newSessions = $after | Where-Object { $_ -notin $before }
+            if ($newSessions) {
+                $sessionId = ($newSessions | Sort-Object | Select-Object -Last 1)
+                Update-StateFile -Path $StateFile -Mutator {
+                    param($s)
+                    $pane = $s.panes | Where-Object { $_.alias -eq $Alias } | Select-Object -First 1
+                    if ($pane -and -not $pane.sessionId) {
+                        $pane | Add-Member -NotePropertyName 'sessionId' -NotePropertyValue $sessionId -Force
+                        return $true
+                    }
+                    return $false
+                }
+                Update-AgentSessionBinding -SessionId $sessionId
+            }
+        }
+    }
+
+    # ── Check for pending work before re-prompting ──
+    $cycle++
+    if ($cycle -ge $effectiveMaxCycles) { break }
+    if (-not $mcpActive) { break }
+
+    $pending = Get-PendingSummary
+    if (-not $pending) { break }
+
+    $totalPending = $pending.unread + $pending.open_tasks + $pending.claimed_tasks
+    if ($totalPending -eq 0) {
+        Write-Host "  [$Alias] No pending work on the board. Cycle complete." -ForegroundColor DarkGray
+        break
+    }
+
+    # Build nudge prompt for next cycle
+    $nudgeParts = @()
+    if ($pending.unread -gt 0) { $nudgeParts += "$($pending.unread) unread message$(if ($pending.unread -ne 1) {'s'})" }
+    if ($pending.open_tasks -gt 0) { $nudgeParts += "$($pending.open_tasks) open task$(if ($pending.open_tasks -ne 1) {'s'})" }
+    if ($pending.claimed_tasks -gt 0) { $nudgeParts += "$($pending.claimed_tasks) task$(if ($pending.claimed_tasks -ne 1) {'s'}) claimed by you" }
+    $script:nudgePrompt = "You have $($nudgeParts -join ' and ') on the board. Check get_messages(unread_only=true) and list_tasks(status='open') to continue working."
+
+    Write-Host "  [$Alias] Pending work detected ($($nudgeParts -join ', ')). Re-prompting in ${cooldownSeconds}s... (cycle $cycle)" -ForegroundColor Yellow
+    Start-Sleep -Seconds $cooldownSeconds
+
+} while ($cycle -lt $effectiveMaxCycles)
+
+if ($cycle -ge $effectiveMaxCycles -and $effectiveMaxCycles -ne [int]::MaxValue) {
+    Write-Host "  [$Alias] Max re-prompt cycles ($effectiveMaxCycles) reached. Waiting for manual input." -ForegroundColor DarkGray
 }
