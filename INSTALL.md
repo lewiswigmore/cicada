@@ -296,7 +296,7 @@ cicada --doctor
 This checks every dependency and reports status. A healthy output looks like:
 
 ```
-  Cicada Doctor v0.1.0
+  Cicada Doctor v0.1.2
   Checking dependencies...
 
   [OK] pwsh 7.x.x
@@ -304,9 +304,9 @@ This checks every dependency and reports status. A healthy output looks like:
   [OK] wt.exe
   [OK] copilot 1.x.x
   [OK] python 3.12.x
-  [OK] cicada-mcp 0.1.0
+  [OK] cicada-mcp 0.1.2
   [OK] MCP server importable
-  [OK] roles.json (4 roles)
+  [OK] roles.json (5 roles)
 
   All checks passed.
 ```
@@ -322,13 +322,13 @@ follow the hint next to each one.
 cicada
 ```
 
-This opens Windows Terminal with four agents (Coder, Reviewer, Tester,
-Researcher) in a 2x2 grid plus a live monitor sidebar.
+This opens Windows Terminal with four agents (PM, Engineer, Reviewer,
+Tester) in a 2x2 grid plus a live monitor sidebar.
 
 Try a smaller team first if you prefer:
 
 ```powershell
-cicada --team "coder,reviewer"
+cicada --team "engineer,reviewer"
 ```
 
 See `cicada --help` for all options, or read [USAGE.md](USAGE.md) for common

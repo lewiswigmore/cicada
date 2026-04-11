@@ -8,7 +8,6 @@ from mcp.server.fastmcp import FastMCP
 from . import db
 
 MAX_ACTIVITY_TURNS = 10
-MAX_ACTIVITY_CHARS = 280
 
 # ── Identity from environment ───────────────────────────────────────────
 ALIAS = os.environ.get("CICADA_ALIAS", "unknown")
@@ -38,12 +37,21 @@ def with_meta(result: dict) -> dict:
 
 
 # ── FastMCP server ──────────────────────────────────────────────────────
-mcp = FastMCP("cicada")
+mcp = FastMCP(
+    "cicada",
+    instructions=(
+        "Cicada is a multi-agent team coordination server. "
+        "Use these tools to collaborate with your teammates: "
+        "check your identity, read the task board, claim and update tasks, "
+        "and send messages to other agents. "
+        "Always check the board for work before declaring you are done."
+    ),
+)
 
 
 @mcp.tool()
 def list_team() -> dict:
-    """Return the team roster: alias, role, title, and status for every agent in this team."""
+    """List all agents on your team with their alias, role, and current status."""
     try:
         conn = _get_db()
         roster = db.get_team(conn, TEAM_ID)
@@ -54,7 +62,7 @@ def list_team() -> dict:
 
 @mcp.tool()
 def whoami() -> dict:
-    """Return this agent's identity: alias, role, title, teammates, unread count, and open tasks."""
+    """Check your own identity, role, teammate list, and pending work summary."""
     try:
         conn = _get_db()
         me = db.get_agent(conn, TEAM_ID, ALIAS)
@@ -75,8 +83,7 @@ def whoami() -> dict:
 
 @mcp.tool()
 def send_message(to: str | None, text: str, kind: str = "info") -> dict:
-    """Send a message to a teammate (by alias) or broadcast to all (to=null).
-    Kinds: info, request, response, review-feedback, broadcast."""
+    """Send a message to a teammate by alias, or broadcast to the whole team (to=null). Use kind to categorize: info, request, response, review-feedback, broadcast."""
     try:
         valid_kinds = {"info", "request", "response", "review-feedback", "broadcast"}
         if kind not in valid_kinds:
@@ -95,7 +102,7 @@ def get_messages(
     since: str | None = None,
     unread_only: bool = False,
 ) -> dict:
-    """Read inbox messages (marks them as read). Filter by sender, kind, timestamp, or unread status."""
+    """Read your inbox messages (marks them as read). Check unread_only=true first to see new messages from teammates."""
     try:
         conn = _get_db()
         msgs = db.get_messages(conn, TEAM_ID, ALIAS, from_alias, kind, since, unread_only)
@@ -106,30 +113,19 @@ def get_messages(
 
 @mcp.tool()
 def get_agent_activity(agent: str, limit: int = 5) -> dict:
-    """Get summarized recent activity from a teammate's Copilot session.
-    Returns short excerpts rather than full raw transcripts."""
+    """Peek at a teammate's recent activity — messages they sent and tasks they claimed or updated."""
     try:
         conn = _get_db()
         teammate = db.get_agent(conn, TEAM_ID, agent)
         if not teammate:
             return with_meta({"error": f"Agent '{agent}' not found in team"})
 
-        session_id = teammate.get("copilot_session_id")
-        if not session_id:
-            return with_meta({
-                "agent": agent,
-                "turns": [],
-                "note": "No copilot_session_id registered for this agent yet",
-            })
-
         safe_limit = max(1, min(limit, MAX_ACTIVITY_TURNS))
-        turns = _query_copilot_db(session_id, safe_limit)
+        activity = db.get_agent_activity(conn, TEAM_ID, agent, safe_limit)
         return with_meta({
             "agent": agent,
-            "turns": turns,
-            "count": len(turns),
-            "limit_applied": safe_limit,
-            "note": "Activity is summarized and server-side capped for privacy.",
+            "activity": activity,
+            "count": len(activity),
         })
     except Exception as e:
         return with_meta({"error": str(e)})
@@ -137,7 +133,7 @@ def get_agent_activity(agent: str, limit: int = 5) -> dict:
 
 @mcp.tool()
 def list_tasks(status: str | None = None, claimed_by: str | None = None) -> dict:
-    """View the task board. Optionally filter by status (open/claimed/done/blocked) or assignee."""
+    """View all tasks on the shared team board. Filter by status (open/in-progress/done/blocked/needs-rework) or by assignee alias."""
     try:
         conn = _get_db()
         tasks = db.list_tasks(conn, TEAM_ID, status, claimed_by)
@@ -148,7 +144,7 @@ def list_tasks(status: str | None = None, claimed_by: str | None = None) -> dict
 
 @mcp.tool()
 def create_task(title: str, description: str = "") -> dict:
-    """Create a new task on the team board. This agent is recorded as the creator."""
+    """Add a new task to the shared team board for teammates to pick up."""
     try:
         conn = _get_db()
         task_id = db.create_task(conn, TEAM_ID, title, description, ALIAS)
@@ -159,7 +155,7 @@ def create_task(title: str, description: str = "") -> dict:
 
 @mcp.tool()
 def claim_task(task_id: int) -> dict:
-    """Claim an open task. Fails if the task is already claimed or doesn't exist."""
+    """Claim an open or needs-rework task and mark it in-progress so other agents know you are working on it. Must claim before starting work."""
     try:
         conn = _get_db()
         result = db.claim_task(conn, TEAM_ID, task_id, ALIAS)
@@ -170,7 +166,7 @@ def claim_task(task_id: int) -> dict:
 
 @mcp.tool()
 def update_task(task_id: int, status: str) -> dict:
-    """Update a task's status. Valid statuses: open, claimed, done, blocked."""
+    """Update a task's status to: open, in-progress, done, blocked, or needs-rework. Use needs-rework to send a task back for fixes after review or testing."""
     try:
         conn = _get_db()
         result = db.update_task(conn, TEAM_ID, task_id, status, ALIAS)
@@ -178,42 +174,3 @@ def update_task(task_id: int, status: str) -> dict:
     except Exception as e:
         return with_meta({"error": str(e)})
 
-
-# ── Copilot session-store query ─────────────────────────────────────────
-def _query_copilot_db(session_id: str, limit: int = 5) -> list[dict]:
-    """Read-only query of Copilot's session-store.db for agent activity."""
-    copilot_db = os.path.expanduser("~/.copilot/session-store.db")
-    if not os.path.exists(copilot_db):
-        return []
-    conn = sqlite3.connect(copilot_db, timeout=3)
-    conn.row_factory = sqlite3.Row
-    rows = conn.execute(
-        "SELECT user_message, assistant_response, timestamp "
-        "FROM turns WHERE session_id = ? ORDER BY timestamp DESC LIMIT ?",
-        (session_id, limit),
-    ).fetchall()
-    conn.close()
-    return [
-        {
-            "timestamp": r["timestamp"],
-            "user_summary": _summarize_turn_text(r["user_message"]),
-            "assistant_summary": _summarize_turn_text(r["assistant_response"]),
-        }
-        for r in rows
-    ]
-
-
-def _summarize_turn_text(text: str | None) -> str:
-    """Return a single-line excerpt instead of a full transcript payload."""
-    if not text:
-        return ""
-    for line in text.splitlines():
-        stripped = line.strip()
-        if stripped:
-            text = stripped
-            break
-    else:
-        text = text.strip()
-    if len(text) <= MAX_ACTIVITY_CHARS:
-        return text
-    return text[: MAX_ACTIVITY_CHARS - 3].rstrip() + "..."

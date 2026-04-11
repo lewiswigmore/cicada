@@ -48,7 +48,7 @@ import sqlite3, sys, json, os
 
 db_path = sys.argv[1] if len(sys.argv) > 1 else os.path.expanduser("~/.cicada/cicada.db")
 if not os.path.exists(db_path):
-    print(json.dumps({"messages": [], "tasks": [], "unread": {}}))
+    print(json.dumps({"messages": [], "tasks": [], "unread": {}, "activity": []}))
     sys.exit(0)
 
 team_id = sys.argv[2] if len(sys.argv) > 2 else ""
@@ -83,28 +83,85 @@ try:
         ).fetchall()
         messages = [dict(r) for r in rows]
 
-    # Task summary
+    # Task summary (recent 10 for display)
     tasks = []
+    task_counts = {}
     if team_id:
         rows = conn.execute(
             "SELECT id, title, status, claimed_by, created_by FROM tasks WHERE team_id = ? ORDER BY created_at DESC LIMIT 10",
             (team_id,)
         ).fetchall()
         tasks = [dict(r) for r in rows]
+        # Aggregate counts across ALL tasks (not limited)
+        count_rows = conn.execute(
+            "SELECT status, COUNT(*) as cnt FROM tasks WHERE team_id = ? GROUP BY status",
+            (team_id,)
+        ).fetchall()
+        task_counts = {r['status']: r['cnt'] for r in count_rows}
+
+    # Recent activity from task_events (last 5)
+    activity = []
+    if team_id:
+        try:
+            rows = conn.execute(
+                "SELECT e.agent, e.event, e.detail, e.created_at, t.title "
+                "FROM task_events e JOIN tasks t ON t.id = e.task_id "
+                "WHERE e.team_id = ? ORDER BY e.created_at DESC LIMIT 5",
+                (team_id,)
+            ).fetchall()
+            activity = [dict(r) for r in rows]
+        except Exception:
+            pass
+
+    # Per-agent activity summary (event count + last event time + last message snippet)
+    agent_status = {}
+    if team_id:
+        try:
+            rows = conn.execute(
+                "SELECT agent, COUNT(*) as events, MAX(created_at) as last_event "
+                "FROM task_events WHERE team_id = ? GROUP BY agent",
+                (team_id,)
+            ).fetchall()
+            for r in rows:
+                agent_status[r["agent"]] = {"events": r["events"], "last_event": r["last_event"], "last_msg": ""}
+        except Exception:
+            pass
+        try:
+            rows = conn.execute(
+                "SELECT from_alias, payload, created_at FROM messages "
+                "WHERE team_id = ? AND id IN (SELECT MAX(id) FROM messages WHERE team_id = ? GROUP BY from_alias)",
+                (team_id, team_id)
+            ).fetchall()
+            for r in rows:
+                alias = r["from_alias"]
+                if alias not in agent_status:
+                    agent_status[alias] = {"events": 0, "last_event": r["created_at"], "last_msg": ""}
+                snippet = (r["payload"] or "")[:120].replace("\n", " ")
+                agent_status[alias]["last_msg"] = snippet
+                if not agent_status[alias]["last_event"] or r["created_at"] > agent_status[alias]["last_event"]:
+                    agent_status[alias]["last_event"] = r["created_at"]
+        except Exception:
+            pass
 
     conn.close()
-    print(json.dumps({"messages": messages, "tasks": tasks, "unread": unread}))
+    print(json.dumps({"messages": messages, "tasks": tasks, "task_counts": task_counts, "unread": unread, "activity": activity, "agent_status": agent_status}))
 except Exception as e:
-    print(json.dumps({"messages": [], "tasks": [], "unread": {}, "error": str(e)}))
+    print(json.dumps({"messages": [], "tasks": [], "task_counts": {}, "unread": {}, "activity": [], "error": str(e)}))
 '@
 $boardQueryScriptPath = "$env:TEMP\cicada_board_query.py"
 Set-Content $boardQueryScriptPath $boardQueryScript -Encoding UTF8
 
 function Invoke-BatchQuery {
     param([array]$Queries)
+    $venvPy = "$HOME\.cicada\venv\Scripts\python.exe"
+    $py = if (Test-Path $venvPy) { $venvPy }
+         elseif (Get-Command python3 -ErrorAction SilentlyContinue) { 'python3' }
+         elseif (Get-Command python -ErrorAction SilentlyContinue) { 'python' }
+         else { $null }
+    if (-not $py) { return @() }
     try {
         $spec = $Queries | ConvertTo-Json -Depth 3 -Compress
-        $raw = & python $queryScriptPath $spec 2>$null
+        $raw = & $py $queryScriptPath $spec 2>$null
         if ($raw) { return ($raw | ConvertFrom-Json) }
     } catch {}
     return @()
@@ -112,11 +169,17 @@ function Invoke-BatchQuery {
 
 function Invoke-BoardQuery {
     param([string]$DbPath, [string]$TeamId)
+    $venvPy = "$HOME\.cicada\venv\Scripts\python.exe"
+    $py = if (Test-Path $venvPy) { $venvPy }
+         elseif (Get-Command python3 -ErrorAction SilentlyContinue) { 'python3' }
+         elseif (Get-Command python -ErrorAction SilentlyContinue) { 'python' }
+         else { $null }
+    if (-not $py) { return @{ messages = @(); tasks = @(); task_counts = @{}; unread = @{}; activity = @(); agent_status = @{} } }
     try {
-        $raw = & python $boardQueryScriptPath $DbPath $TeamId 2>$null
+        $raw = & $py $boardQueryScriptPath $DbPath $TeamId 2>$null
         if ($raw) { return ($raw | ConvertFrom-Json) }
     } catch {}
-    return @{ messages = @(); tasks = @(); unread = @{} }
+    return @{ messages = @(); tasks = @(); task_counts = @{}; unread = @{}; activity = @(); agent_status = @{} }
 }
 
 # ── ANSI helpers ──
@@ -180,8 +243,9 @@ function Sync-AgentSessionBinding {
         [string]$SessionId
     )
     if (-not $DbPath -or -not $TeamId -or -not $Alias -or -not $SessionId) { return }
+    $venvPy = "$HOME\.cicada\venv\Scripts\python.exe"
     try {
-        & python -m cicada_mcp bind-session --team-id $TeamId --alias $Alias --session-id $SessionId --db $DbPath 2>$null | Out-Null
+        & $venvPy -m cicada_mcp bind-session --team-id $TeamId --alias $Alias --session-id $SessionId --db $DbPath 2>$null | Out-Null
     } catch {}
 }
 
@@ -272,10 +336,9 @@ function Show-Monitor {
         return
     }
 
-    # ── Batch DB query: stats+latest (CTE) + activity feed ──
+    # ── Batch DB query: per-agent stats + latest turn from Copilot session-store ──
     $sessionIds = @($state.panes | Where-Object { $_.sessionId } | ForEach-Object { $_.sessionId })
     $agentData = @{}
-    $activityFeed = @()
 
     if ($sessionIds.Count -gt 0) {
         $results = Invoke-BatchQuery -Queries @(
@@ -283,17 +346,19 @@ function Show-Monitor {
             @{
                 query = "WITH latest AS (SELECT session_id, MAX(turn_index) AS max_turn, COUNT(*) AS turns, MAX(timestamp) AS last_active FROM turns WHERE session_id IN (?IDS?) GROUP BY session_id) SELECT l.session_id, l.turns, l.last_active, t.user_message, t.assistant_response FROM latest l LEFT JOIN turns t ON t.session_id = l.session_id AND t.turn_index = l.max_turn"
                 ids = $sessionIds
-            },
-            # Q1: activity feed — recent turns across all agents
-            @{
-                query = "SELECT session_id, user_message, assistant_response, timestamp FROM turns WHERE session_id IN (?IDS?) ORDER BY timestamp DESC LIMIT 5"
-                ids = $sessionIds
             }
         )
         if ($results.Count -ge 1 -and $results[0]) {
             foreach ($r in $results[0]) { $agentData[$r.session_id] = $r }
         }
-        if ($results.Count -ge 2 -and $results[1]) { $activityFeed = $results[1] }
+    }
+
+    # Fetch cicada board data early so we can use agent_status in the Team section
+    $cicadaDb = "$HOME\.cicada\cicada.db"
+    $teamId = $state.sessionGuid
+    $boardData = $null
+    if ((Test-Path $cicadaDb) -and $teamId) {
+        $boardData = Invoke-BoardQuery -DbPath $cicadaDb -TeamId $teamId
     }
 
     # Total turns
@@ -308,8 +373,13 @@ function Show-Monitor {
     foreach ($p in $state.panes) {
         $color = Get-AnsiColor $p.color
 
-        # Determine status based on session data, not process count
-        $turns = 0; $age = ""; $status = "launching"
+        # Determine status: prefer cicada DB agent_status, fall back to session-store
+        $turns = 0; $age = ""; $status = "launching"; $contextLine = ""
+        $cicadaStatus = $null
+        if ($boardData -and $boardData.agent_status -and $boardData.agent_status.PSObject.Properties[$p.alias]) {
+            $cicadaStatus = $boardData.agent_status.($p.alias)
+        }
+
         if ($p.sessionId -and $agentData.ContainsKey($p.sessionId)) {
             $d = $agentData[$p.sessionId]
             $turns = $d.turns
@@ -317,8 +387,25 @@ function Show-Monitor {
             $status = if ($turns -eq 0) { "waiting" }
                       elseif ($age -eq "now" -or $age -eq "1m") { "active" }
                       else { "idle" }
+            # Context from session-store
+            if ($d.assistant_response) {
+                $contextLine = Truncate (Get-FirstMeaningfulLine $d.assistant_response) $contextWidth
+            } elseif ($d.user_message) {
+                $contextLine = Truncate $d.user_message $contextWidth
+            }
         } elseif ($p.sessionId) {
             $status = "waiting"
+        }
+
+        # Override with cicada DB info if session-store has no data
+        if ($cicadaStatus -and ($status -eq "launching" -or $status -eq "waiting" -or ($turns -eq 0 -and $cicadaStatus.events -gt 0))) {
+            $cicadaAge = Format-Ago $cicadaStatus.last_event
+            $status = if ($cicadaAge -eq "now" -or $cicadaAge -eq "1m") { "active" } else { "idle" }
+            $turns = $cicadaStatus.events
+            $age = $cicadaAge
+            if (-not $contextLine -and $cicadaStatus.last_msg) {
+                $contextLine = Truncate $cicadaStatus.last_msg $contextWidth
+            }
         }
 
         $dot = switch ($status) {
@@ -336,19 +423,8 @@ function Show-Monitor {
 
         Write-Host " ${dot} ${color}$($p.title)${rst}${statsStr}"
 
-        # Line 2: conversation context (show EITHER user ask OR assistant response, not both)
-        if ($p.sessionId -and $agentData.ContainsKey($p.sessionId)) {
-            $d = $agentData[$p.sessionId]
-            $contextLine = ""
-            if ($d.assistant_response) {
-                $firstLine = Get-FirstMeaningfulLine $d.assistant_response
-                $contextLine = Truncate $firstLine $contextWidth
-            } elseif ($d.user_message) {
-                $contextLine = Truncate $d.user_message $contextWidth
-            }
-            if ($contextLine) {
-                Write-Host "   ${dim}$contextLine${rst}"
-            }
+        if ($contextLine) {
+            Write-Host "   ${dim}$contextLine${rst}"
         } elseif ($status -eq "waiting") {
             Write-Host "   ${dim}awaiting first prompt${rst}"
         } elseif ($status -eq "launching") {
@@ -357,14 +433,6 @@ function Show-Monitor {
     }
 
     # ── Board: messages + tasks from cicada.db ──
-    $cicadaDb = "$HOME\.cicada\cicada.db"
-    $teamId = $state.sessionGuid
-    $boardData = $null
-
-    if ((Test-Path $cicadaDb) -and $teamId) {
-        $boardData = Invoke-BoardQuery -DbPath $cicadaDb -TeamId $teamId
-    }
-
     if ($boardData -and ($boardData.messages.Count -gt 0 -or $boardData.tasks.Count -gt 0)) {
         Write-Host ""
         Write-Host " ${bold}Board${rst}" -ForegroundColor Yellow
@@ -376,9 +444,12 @@ function Show-Monitor {
                 $totalUnread += $boardData.unread.$key
             }
         }
-        $taskOpen = @($boardData.tasks | Where-Object { $_.status -eq 'open' }).Count
-        $taskClaimed = @($boardData.tasks | Where-Object { $_.status -eq 'claimed' }).Count
-        $taskDone = @($boardData.tasks | Where-Object { $_.status -eq 'done' }).Count
+        # Use aggregate counts (accurate across all tasks, not just the LIMIT 10 display list)
+        $tc = $boardData.task_counts
+        $taskOpen = if ($tc -and $tc.open) { $tc.open } else { 0 }
+        $taskInProgress = if ($tc -and $tc.'in-progress') { $tc.'in-progress' } else { 0 }
+        $taskDone = if ($tc -and $tc.done) { $tc.done } else { 0 }
+        $taskRework = if ($tc -and $tc.'needs-rework') { $tc.'needs-rework' } else { 0 }
 
         if ($totalUnread -gt 0) {
             # Show per-agent unread
@@ -389,15 +460,17 @@ function Show-Monitor {
                 }
             }
             $unreadStr = if ($unreadParts.Count -gt 0) { " ($($unreadParts -join ', '))" } else { "" }
-            Write-Host " `u{1F4AC} $totalUnread unread$unreadStr" -ForegroundColor White
+            Write-Host " Unread: $totalUnread$unreadStr" -ForegroundColor White
         }
 
-        if ($boardData.tasks.Count -gt 0) {
+        $taskTotal = $taskOpen + $taskInProgress + $taskDone + $taskRework
+        if ($taskTotal -gt 0) {
             $taskParts = @()
             if ($taskOpen -gt 0) { $taskParts += "$taskOpen open" }
-            if ($taskClaimed -gt 0) { $taskParts += "$taskClaimed claimed" }
+            if ($taskInProgress -gt 0) { $taskParts += "$taskInProgress in-progress" }
+            if ($taskRework -gt 0) { $taskParts += "$taskRework needs-rework" }
             if ($taskDone -gt 0) { $taskParts += "$taskDone done" }
-            Write-Host " `u{1F4CB} $($boardData.tasks.Count) tasks ($($taskParts -join ', '))" -ForegroundColor White
+            Write-Host " Tasks: $taskTotal ($($taskParts -join ', '))" -ForegroundColor White
         }
 
         # Recent messages (max 3)
@@ -421,39 +494,79 @@ function Show-Monitor {
         }
     }
 
+    # ── Idle alerts: warn when agents are idle with pending work ──
+    if ($boardData) {
+        $idleAlerts = @()
+        foreach ($p in $state.panes) {
+            # Determine if this agent is idle
+            $agentStatus = "launching"
+            $cicadaStatus = $null
+            if ($boardData.agent_status -and $boardData.agent_status.PSObject.Properties[$p.alias]) {
+                $cicadaStatus = $boardData.agent_status.($p.alias)
+            }
+            if ($p.sessionId -and $agentData.ContainsKey($p.sessionId)) {
+                $d = $agentData[$p.sessionId]
+                $agentAge = Format-Ago $d.last_active
+                $agentStatus = if ($d.turns -eq 0) { "waiting" }
+                              elseif ($agentAge -eq "now" -or $agentAge -eq "1m") { "active" }
+                              else { "idle" }
+            } elseif ($p.sessionId) {
+                $agentStatus = "waiting"
+            }
+            # Fallback to cicada DB when session-store has no data
+            if ($cicadaStatus -and ($agentStatus -eq "launching" -or $agentStatus -eq "waiting" -or ($agentStatus -eq "idle" -and $cicadaStatus.events -gt 0))) {
+                $cicadaAge = Format-Ago $cicadaStatus.last_event
+                $agentStatus = if ($cicadaAge -eq "now" -or $cicadaAge -eq "1m") { "active" } else { "idle" }
+            }
+
+            if ($agentStatus -ne "idle") { continue }
+
+            # Check if this agent has pending work
+            $agentUnread = 0
+            if ($boardData.unread -and $boardData.unread.PSObject.Properties[$p.alias]) {
+                $agentUnread = $boardData.unread.($p.alias)
+            }
+            $pendingParts = @()
+            if ($agentUnread -gt 0) { $pendingParts += "$agentUnread unread" }
+            if ($taskOpen -gt 0) { $pendingParts += "$taskOpen open task$(if ($taskOpen -ne 1) {'s'})" }
+            if ($taskRework -gt 0) { $pendingParts += "$taskRework needs-rework" }
+            if ($pendingParts.Count -gt 0) {
+                $idleAlerts += " [!] $($p.alias) idle with $($pendingParts -join ', ')"
+            }
+        }
+        if ($idleAlerts.Count -gt 0) {
+            Write-Host ""
+            foreach ($alert in $idleAlerts) {
+                Write-Host $alert -ForegroundColor Yellow
+            }
+        }
+    }
+
     Write-Host ""
 
-    # ── Activity feed: recent completed turns ──
-    if ($activityFeed.Count -gt 0) {
+    # ── Activity feed: recent task events from cicada DB ──
+    if ($boardData -and $boardData.activity -and @($boardData.activity).Count -gt 0) {
         Write-Host " ${bold}Recent${rst}" -ForegroundColor Yellow
 
-        $idToRole = @{}; $idToColor = @{}
+        # Map alias → color
+        $aliasColor = @{}
         foreach ($p in $state.panes) {
-            if ($p.sessionId) {
-                $idToRole[$p.sessionId] = $p.title
-                $idToColor[$p.sessionId] = Get-AnsiColor $p.color
-            }
+            $aliasColor[$p.alias] = Get-AnsiColor $p.color
         }
 
         $shown = 0
-        foreach ($entry in $activityFeed) {
+        foreach ($evt in $boardData.activity) {
             if ($shown -ge 3) { break }
-            $role = if ($idToRole.ContainsKey($entry.session_id)) { $idToRole[$entry.session_id] } else { "?" }
-            $roleColor = if ($idToColor.ContainsKey($entry.session_id)) { $idToColor[$entry.session_id] } else { $dim }
-            $feedTime = ""
-            if ($entry.timestamp) {
-                try { $feedTime = ([DateTime]::Parse($entry.timestamp)).ToLocalTime().ToString("HH:mm") } catch {}
+            $agentAlias = $evt.agent
+            $roleColor = if ($aliasColor.ContainsKey($agentAlias)) { $aliasColor[$agentAlias] } else { $dim }
+            $evtTime = ""
+            if ($evt.created_at) {
+                try { $evtTime = ([DateTime]::Parse($evt.created_at)).ToLocalTime().ToString("HH:mm") } catch {}
             }
-
-            $summary = ""
-            if ($entry.assistant_response) {
-                $summary = Truncate (Get-FirstMeaningfulLine $entry.assistant_response) ($w - 10)
-            } elseif ($entry.user_message) {
-                $summary = Truncate $entry.user_message ($w - 10)
-            }
-
-            Write-Host " ${dim}$feedTime${rst} ${roleColor}$role${rst}"
-            if ($summary) { Write-Host "   ${dim}$summary${rst}" }
+            $evtTitle = Truncate $evt.title ($w - 16)
+            $evtDetail = if ($evt.detail) { " [$($evt.detail)]" } else { "" }
+            Write-Host " ${dim}$evtTime${rst} ${roleColor}$agentAlias${rst} $($evt.event)${dim}$evtDetail${rst}"
+            if ($evtTitle) { Write-Host "   ${dim}$evtTitle${rst}" }
             $shown++
         }
     }

@@ -58,6 +58,17 @@ CREATE TABLE IF NOT EXISTS tasks (
     updated_at  TEXT DEFAULT (datetime('now'))
 );
 CREATE INDEX IF NOT EXISTS idx_tasks_team ON tasks(team_id, status);
+
+CREATE TABLE IF NOT EXISTS task_events (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    team_id    TEXT NOT NULL REFERENCES teams(team_id),
+    task_id    INTEGER NOT NULL REFERENCES tasks(id),
+    event      TEXT NOT NULL,
+    agent      TEXT NOT NULL,
+    detail     TEXT,
+    created_at TEXT DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_taskevt_team ON task_events(team_id, agent, created_at);
 """
 
 
@@ -68,6 +79,11 @@ def init_db(db_path: str) -> sqlite3.Connection:
     conn.execute("PRAGMA foreign_keys=ON")
     conn.row_factory = sqlite3.Row
     conn.executescript(_SCHEMA_SQL)
+
+    # Migrate legacy 'claimed' status to 'in-progress'
+    conn.execute(
+        "UPDATE tasks SET status = 'in-progress' WHERE status = 'claimed'"
+    )
 
     # Record schema version (idempotent)
     existing = conn.execute(
@@ -249,6 +265,33 @@ def get_open_task_count(db: sqlite3.Connection, team_id: str) -> int:
     return row["cnt"] if row else 0
 
 
+def get_pending_summary(
+    db: sqlite3.Connection, team_id: str, alias: str
+) -> dict:
+    """Return pending work counts for an agent: unread messages, open tasks, needs-rework tasks, and in-progress tasks."""
+    unread = get_unread_count(db, team_id, alias)
+    open_tasks = get_open_task_count(db, team_id)
+    row = db.execute(
+        "SELECT COUNT(*) as cnt FROM tasks "
+        "WHERE team_id = ? AND status = 'in-progress' AND claimed_by = ?",
+        (team_id, alias),
+    ).fetchone()
+    in_progress_tasks = row["cnt"] if row else 0
+    # Count needs-rework tasks (available for any implementer to re-claim)
+    row = db.execute(
+        "SELECT COUNT(*) as cnt FROM tasks "
+        "WHERE team_id = ? AND status = 'needs-rework'",
+        (team_id,),
+    ).fetchone()
+    rework_tasks = row["cnt"] if row else 0
+    return {
+        "unread": unread,
+        "open_tasks": open_tasks,
+        "in_progress_tasks": in_progress_tasks,
+        "rework_tasks": rework_tasks,
+    }
+
+
 def create_task(
     db: sqlite3.Connection,
     team_id: str,
@@ -261,8 +304,13 @@ def create_task(
         "INSERT INTO tasks (team_id, title, description, created_by) VALUES (?, ?, ?, ?)",
         (team_id, title, description, created_by),
     )
+    task_id = cur.lastrowid
+    db.execute(
+        "INSERT INTO task_events (team_id, task_id, event, agent, detail) VALUES (?, ?, 'created', ?, ?)",
+        (team_id, task_id, created_by, title[:120]),
+    )
     db.commit()
-    return cur.lastrowid
+    return task_id
 
 
 def list_tasks(
@@ -296,7 +344,7 @@ def list_tasks(
 def claim_task(
     db: sqlite3.Connection, team_id: str, task_id: int, alias: str
 ) -> dict:
-    """Claim an open task. Uses a transaction to prevent races."""
+    """Claim an open or needs-rework task. Uses a transaction to prevent races."""
     row = db.execute(
         "SELECT id, status, claimed_by FROM tasks WHERE id = ? AND team_id = ?",
         (task_id, team_id),
@@ -304,33 +352,33 @@ def claim_task(
 
     if not row:
         return {"success": False, "error": "Task not found"}
-    if row["status"] != "open":
+    if row["status"] not in ("open", "needs-rework"):
         return {
             "success": False,
             "error": f"Task already {row['status']} by {row['claimed_by']}",
         }
 
-    db.execute(
-        "UPDATE tasks SET status = 'claimed', claimed_by = ?, "
-        "updated_at = datetime('now') WHERE id = ? AND status = 'open'",
+    cur = db.execute(
+        "UPDATE tasks SET status = 'in-progress', claimed_by = ?, "
+        "updated_at = datetime('now') WHERE id = ? AND status IN ('open', 'needs-rework')",
         (alias, task_id),
     )
+    if cur.rowcount == 0:
+        # Race: another agent claimed it between our SELECT and UPDATE
+        return {"success": False, "error": "Lost race — claimed by another agent"}
+    db.execute(
+        "INSERT INTO task_events (team_id, task_id, event, agent, detail) VALUES (?, ?, 'claimed', ?, 'in-progress')",
+        (team_id, task_id, alias),
+    )
     db.commit()
-
-    # Verify we actually got it (race-safe check)
-    updated = db.execute(
-        "SELECT claimed_by FROM tasks WHERE id = ?", (task_id,)
-    ).fetchone()
-    if updated and updated["claimed_by"] == alias:
-        return {"success": True, "task_id": task_id, "claimed_by": alias}
-    return {"success": False, "error": "Lost race — claimed by another agent"}
+    return {"success": True, "task_id": task_id, "claimed_by": alias}
 
 
 def update_task(
     db: sqlite3.Connection, team_id: str, task_id: int, status: str, alias: str
 ) -> dict:
-    """Update task status. Valid statuses: open, claimed, done, blocked."""
-    valid = {"open", "claimed", "done", "blocked"}
+    """Update task status. Valid statuses: open, in-progress, done, blocked, needs-rework."""
+    valid = {"open", "in-progress", "done", "blocked", "needs-rework"}
     if status not in valid:
         return {"success": False, "error": f"Invalid status. Must be one of: {valid}"}
 
@@ -340,9 +388,63 @@ def update_task(
     if not row:
         return {"success": False, "error": "Task not found"}
 
+    # needs-rework and open clear claimed_by so the task appears on the board for (re-)claim
+    # in-progress requires claimed_by — use claim_task instead of update_task for that transition
+    if status == "in-progress":
+        return {"success": False, "error": "Use claim_task to move a task to in-progress"}
+    if status in ("needs-rework", "open"):
+        db.execute(
+            "UPDATE tasks SET status = ?, claimed_by = NULL, updated_at = datetime('now') WHERE id = ?",
+            (status, task_id),
+        )
+    else:
+        db.execute(
+            "UPDATE tasks SET status = ?, updated_at = datetime('now') WHERE id = ?",
+            (status, task_id),
+        )
     db.execute(
-        "UPDATE tasks SET status = ?, updated_at = datetime('now') WHERE id = ?",
-        (status, task_id),
+        "INSERT INTO task_events (team_id, task_id, event, agent, detail) VALUES (?, ?, 'status_changed', ?, ?)",
+        (team_id, task_id, alias, status),
     )
     db.commit()
     return {"success": True, "task_id": task_id, "status": status, "updated_by": alias}
+
+
+def get_agent_activity(
+    db: sqlite3.Connection, team_id: str, alias: str, limit: int = 10
+) -> list[dict]:
+    """Get recent activity for an agent from messages sent and task events."""
+    # Recent messages sent by this agent
+    msgs = db.execute(
+        "SELECT payload, to_alias, kind, created_at FROM messages "
+        "WHERE team_id = ? AND from_alias = ? ORDER BY created_at DESC LIMIT ?",
+        (team_id, alias, limit),
+    ).fetchall()
+
+    # Recent task events by this agent
+    evts = db.execute(
+        "SELECT e.event, e.detail, e.created_at, t.title FROM task_events e "
+        "JOIN tasks t ON t.id = e.task_id "
+        "WHERE e.team_id = ? AND e.agent = ? ORDER BY e.created_at DESC LIMIT ?",
+        (team_id, alias, limit),
+    ).fetchall()
+
+    activity: list[dict] = []
+    for m in msgs:
+        target = m["to_alias"] or "broadcast"
+        text = m["payload"][:120] if m["payload"] else ""
+        activity.append({
+            "type": "message",
+            "time": m["created_at"],
+            "summary": f"Sent {m['kind']} to {target}: {text}",
+        })
+    for e in evts:
+        title = e["title"][:60] if e["title"] else ""
+        activity.append({
+            "type": "task",
+            "time": e["created_at"],
+            "summary": f"{e['event']} — {title} [{e['detail']}]",
+        })
+
+    activity.sort(key=lambda x: x["time"], reverse=True)
+    return activity[:limit]

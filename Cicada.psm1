@@ -47,10 +47,12 @@ function Show-CicadaHelp {
     Write-Host "    --no-mcp                Disable Cicada MCP and block other Copilot MCP servers"
     Write-Host "    --yolo                  Auto-approve all tools, paths, and URLs"
     Write-Host "    --autopilot             Enable Copilot autopilot mode (implies --yolo)"
+    Write-Host "    --max-cycles <N>        Max re-prompt cycles per agent (default: 5, autopilot: unlimited)"
+    Write-Host "    --icebreaker            Add a random team warm-up prompt at launch"
     Write-Host "    --prompt <text>         Shared context for all agents on launch"
     Write-Host "                            e.g. --prompt `"We are working on the API`""
     Write-Host "    --team <roles>          Custom team composition (comma-separated)"
-    Write-Host "                            e.g. --team `"coder,reviewer`""
+    Write-Host "                            e.g. --team `"engineer,reviewer`""
     Write-Host "                            Supports 1-6 agents with auto layout"
     Write-Host "    -d, --directory <path>  Override working directory"
     Write-Host ""
@@ -59,8 +61,9 @@ function Show-CicadaHelp {
     Write-Host "    cicada --yolo                    # auto-approve all tools, paths, and URLs"
     Write-Host "    cicada --autopilot               # autopilot mode (implies --yolo)"
     Write-Host "    cicada --continue                # reopen the last saved team session"
+    Write-Host "    cicada --icebreaker              # launch with a fun random warm-up prompt"
     Write-Host "    cicada --prompt `"Fix the auth bug`" # give all agents shared context"
-    Write-Host "    cicada --team `"coder,tester`"     # 2-agent team"
+    Write-Host "    cicada --team `"engineer,tester`"     # 2-agent team"
     Write-Host "    cicada --no-mcp                  # launch without any MCP servers"
     Write-Host "    cicada --doctor                  # check dependencies"
     Write-Host ""
@@ -173,22 +176,25 @@ function Show-CicadaDoctor {
         $warnings++
     }
 
-    # Check mcp package
-    if ($pythonExe) {
-        $mcpCheck = & $pythonExe -c "import cicada_mcp; print(cicada_mcp.__version__)" 2>$null
+    # Check MCP venv and cicada-mcp package
+    $venvPython = "$HOME\.cicada\venv\Scripts\python.exe"
+    if (Test-Path $venvPython) {
+        $mcpCheck = & $venvPython -c "import cicada_mcp; print(cicada_mcp.__version__)" 2>$null
         if ($LASTEXITCODE -eq 0 -and $mcpCheck) {
             $mcpVer = ($mcpCheck | Select-Object -Last 1).Trim()
-            Write-Host "  [OK] cicada-mcp $mcpVer" -ForegroundColor Green
+            Write-Host "  [OK] cicada-mcp $mcpVer (venv)" -ForegroundColor Green
         } else {
-            $modPath = (Get-Module Cicada -ListAvailable | Select-Object -First 1).ModuleBase
-            Write-Host "  [--] cicada-mcp not installed — run: $pythonExe -m pip install `"$modPath`"" -ForegroundColor Yellow
+            Write-Host "  [--] cicada-mcp not installed in venv — re-run Install-Cicada.ps1" -ForegroundColor Yellow
             $warnings++
         }
+    } else {
+        Write-Host "  [--] MCP venv not found — re-run Install-Cicada.ps1" -ForegroundColor Yellow
+        $warnings++
     }
 
     # Check MCP server can start (catches import errors, SDK conflicts)
-    if ($pythonExe -and $LASTEXITCODE -eq 0) {
-        $serverCheck = & $pythonExe -c "from cicada_mcp.server import mcp" 2>$null
+    if (Test-Path $venvPython) {
+        $serverCheck = & $venvPython -c "from cicada_mcp.server import mcp" 2>$null
         if ($LASTEXITCODE -eq 0) {
             Write-Host "  [OK] MCP server importable" -ForegroundColor Green
         } else {
@@ -268,24 +274,14 @@ function Uninstall-Cicada {
     Write-Host "  Cicada Uninstall" -ForegroundColor Cyan
     Write-Host ""
 
-    # 1. Uninstall cicada-mcp Python package
-    $pythonExe = $null
-    if (Get-Command python -ErrorAction SilentlyContinue) {
-        $testVer = (python --version 2>&1)
-        if ($LASTEXITCODE -eq 0 -and $testVer -match 'Python \d') { $pythonExe = 'python' }
-    }
-    if (-not $pythonExe -and (Get-Command python3 -ErrorAction SilentlyContinue)) {
-        $testVer = (python3 --version 2>&1)
-        if ($LASTEXITCODE -eq 0 -and $testVer -match 'Python \d') { $pythonExe = 'python3' }
-    }
-    if ($pythonExe) {
-        Write-Host "  Removing cicada-mcp Python package..." -ForegroundColor DarkGray
-        & $pythonExe -m pip uninstall cicada-mcp -y 2>&1 | Out-Null
-        if ($LASTEXITCODE -eq 0) {
-            Write-Host "  [OK] cicada-mcp uninstalled" -ForegroundColor Green
-        } else {
-            Write-Host "  [--] cicada-mcp was not installed" -ForegroundColor DarkGray
-        }
+    # 1. Remove MCP venv (contains cicada-mcp and all dependencies)
+    $venvDir = "$HOME\.cicada\venv"
+    if (Test-Path $venvDir) {
+        Write-Host "  Removing MCP venv..." -ForegroundColor DarkGray
+        Remove-Item $venvDir -Recurse -Force -ErrorAction SilentlyContinue
+        Write-Host "  [OK] MCP venv removed" -ForegroundColor Green
+    } else {
+        Write-Host "  [--] MCP venv not found" -ForegroundColor DarkGray
     }
 
     # 2. Remove cicada.cmd shim and PATH entry (before removing ~/.cicada)
@@ -394,11 +390,11 @@ function Update-Cicada {
             Copy-Item $pyprojectSrc "$moduleBase\pyproject.toml" -Force
         }
 
-        # Reinstall Python package if available
-        $pythonCmd = Get-Command python -ErrorAction SilentlyContinue
-        if ($pythonCmd) {
+        # Reinstall Python package into venv
+        $venvPython = "$HOME\.cicada\venv\Scripts\python.exe"
+        if (Test-Path $venvPython) {
             Write-Host "  Updating Python MCP package..." -ForegroundColor DarkGray
-            & python -m pip install --quiet $moduleBase 2>&1 | Out-Null
+            & $venvPython -m pip install --quiet $moduleBase 2>&1 | Out-Null
             if ($LASTEXITCODE -eq 0) {
                 Write-Host "  [OK] cicada-mcp updated" -ForegroundColor Green
             } else {
@@ -474,10 +470,36 @@ function Invoke-Cicada {
             $params['Autopilot'] = $true
             $params['Yolo'] = $true
         }
+        elseif ($lower -eq '--icebreaker') {
+            $params['Icebreaker'] = $true
+        }
+        elseif ($lower -eq '--max-cycles') {
+            $i++
+            # 0 = sentinel for smart default (resolved in Start-Agent.ps1: 5 normally, unlimited in autopilot)
+            if ($i -lt $args.Count) {
+                $val = $args[$i] -as [int]
+                if ($val -and $val -gt 0) {
+                    $params['MaxCycles'] = $val
+                } else {
+                    Write-Host "  --max-cycles requires a positive integer." -ForegroundColor Red
+                    return
+                }
+            } else {
+                Write-Host "  --max-cycles requires a number argument." -ForegroundColor Red
+                return
+            }
+        }
         elseif ($lower -eq '--prompt') {
             $i++
-            if ($i -lt $args.Count) {
-                $params['Prompt'] = "$($args[$i])"
+            # Collect all args until the next --flag (handles split quoted strings)
+            $promptParts = @()
+            while ($i -lt $args.Count -and "$($args[$i])" -notmatch '^--') {
+                $promptParts += "$($args[$i])"
+                $i++
+            }
+            $i--  # outer loop will increment
+            if ($promptParts.Count -gt 0) {
+                $params['Prompt'] = $promptParts -join ' '
             } else {
                 Write-Host "  --prompt requires a text argument." -ForegroundColor Red
                 return
@@ -488,7 +510,7 @@ function Invoke-Cicada {
             if ($i -lt $args.Count) {
                 $params['Team'] = "$($args[$i])"
             } else {
-                Write-Host "  --team requires a roles argument (e.g. `"coder,reviewer`")." -ForegroundColor Red
+                Write-Host "  --team requires a roles argument (e.g. `"engineer,reviewer`")." -ForegroundColor Red
                 return
             }
         }
