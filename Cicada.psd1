@@ -1,6 +1,6 @@
 @{
     RootModule        = 'Cicada.psm1'
-    ModuleVersion     = '0.1.0'
+    ModuleVersion     = '0.1.2'
     GUID              = 'a3c7e8f1-4b2d-4e9a-b6d8-1f3c5a7e9b2d'
     Author            = 'Lewis Wigmore'
     CompanyName       = 'Community'
@@ -22,7 +22,7 @@
             Tags         = @('copilot', 'terminal', 'agents', 'windows-terminal', 'multi-agent', 'orchestrator', 'mcp')
             LicenseUri   = 'https://github.com/lewiswigmore/cicada/blob/master/LICENSE'
             ProjectUri   = 'https://github.com/lewiswigmore/cicada'
-            ReleaseNotes = 'v0.1.0: Open-source release baseline with adaptive layouts, MCP coordination, exact session resume/continue, yolo/autopilot launch modes, doctor/update flows, and refreshed documentation.'
+            ReleaseNotes = 'v0.1.1: Dedicated MCP venv, improved tool descriptions, PM role, autopilot re-prompt loop, and prompt cleanup.'
         }
     }
 }
