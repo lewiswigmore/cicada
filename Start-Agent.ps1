@@ -123,7 +123,7 @@ if ($teammates) {
     $parts += "Your teammates: $($teammates -join ', ')."
 }
 if ($McpConfigPath -and (Test-Path $McpConfigPath)) {
-    $parts += "You have Cicada coordination tools for messaging teammates and managing a shared task board. After completing any task, always check get_messages(unread_only=true) and list_tasks(status='open') for new work before going idle. Claim and start any open tasks that match your role. Before declaring all work complete, call list_tasks() to confirm nothing is pending on the board."
+    $parts += "You have Cicada coordination tools for messaging teammates and managing a shared task board. After completing any task, always check get_messages(unread_only=true) and list_tasks(status='open') for new work before going idle. For any open task that matches your role, call claim_task(task_id=...) to claim it on the shared board, then start work. Before declaring all work complete, call list_tasks() to confirm nothing is pending on the board."
 }
 $fullPrompt = $parts -join ' '
 
