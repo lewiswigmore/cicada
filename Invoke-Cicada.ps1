@@ -290,9 +290,6 @@ if (-not $NoMcp) {
     if (Test-Path $venvPython) {
         $pythonCmd = Get-Command $venvPython -ErrorAction SilentlyContinue
     }
-    if (-not $pythonCmd) {
-        Write-Host "  MCP venv not found — run Install-Cicada.ps1 to set up" -ForegroundColor Yellow
-    }
     if ($pythonCmd) {
         $agentsList = ($paneConfigs | ForEach-Object { $_.Alias }) -join ','
 
