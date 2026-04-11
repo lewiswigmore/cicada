@@ -328,7 +328,7 @@ if (-not $NoMcp) {
             Write-Warning "  $initResult"
         }
     } else {
-        Write-Host "  Python not found — launching without MCP tools" -ForegroundColor DarkGray
+        Write-Host "  MCP venv not found — launching without MCP tools (run Install-Cicada.ps1)" -ForegroundColor DarkGray
     }
 }
 

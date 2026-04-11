@@ -353,24 +353,20 @@ def claim_task(
             "error": f"Task already {row['status']} by {row['claimed_by']}",
         }
 
-    db.execute(
+    cur = db.execute(
         "UPDATE tasks SET status = 'in-progress', claimed_by = ?, "
         "updated_at = datetime('now') WHERE id = ? AND status IN ('open', 'needs-rework')",
         (alias, task_id),
     )
+    if cur.rowcount == 0:
+        # Race: another agent claimed it between our SELECT and UPDATE
+        return {"success": False, "error": "Lost race — claimed by another agent"}
     db.execute(
         "INSERT INTO task_events (team_id, task_id, event, agent, detail) VALUES (?, ?, 'claimed', ?, 'in-progress')",
         (team_id, task_id, alias),
     )
     db.commit()
-
-    # Verify we actually got it (race-safe check)
-    updated = db.execute(
-        "SELECT claimed_by FROM tasks WHERE id = ?", (task_id,)
-    ).fetchone()
-    if updated and updated["claimed_by"] == alias:
-        return {"success": True, "task_id": task_id, "claimed_by": alias}
-    return {"success": False, "error": "Lost race — claimed by another agent"}
+    return {"success": True, "task_id": task_id, "claimed_by": alias}
 
 
 def update_task(
@@ -387,7 +383,10 @@ def update_task(
     if not row:
         return {"success": False, "error": "Task not found"}
 
-    # needs-rework and open both clear claimed_by so the task appears on the board for (re-)claim
+    # needs-rework and open clear claimed_by so the task appears on the board for (re-)claim
+    # in-progress requires claimed_by — use claim_task instead of update_task for that transition
+    if status == "in-progress":
+        return {"success": False, "error": "Use claim_task to move a task to in-progress"}
     if status in ("needs-rework", "open"):
         db.execute(
             "UPDATE tasks SET status = ?, claimed_by = NULL, updated_at = datetime('now') WHERE id = ?",

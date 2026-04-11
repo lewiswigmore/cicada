@@ -20,7 +20,13 @@ param(
 
 # If launched via config file, read params from JSON and override
 if ($ConfigFile -and (Test-Path $ConfigFile)) {
-    $cfg = Get-Content $ConfigFile -Raw -Encoding UTF8 | ConvertFrom-Json
+    try {
+        $cfg = Get-Content $ConfigFile -Raw -Encoding UTF8 | ConvertFrom-Json
+    } catch {
+        Write-Host "Failed to read config file: $ConfigFile" -ForegroundColor Red
+        Write-Host "  $_" -ForegroundColor Red
+        return
+    }
     Remove-Item $ConfigFile -Force -ErrorAction SilentlyContinue
     $Role            = $cfg.Role
     $Alias           = $cfg.Alias
