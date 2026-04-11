@@ -8,10 +8,10 @@ cicada
 
 This opens the default 4-agent team:
 
-- Coder
+- PM
+- Engineer
 - Reviewer
 - Tester
-- Researcher
 
 with the monitor in a narrow right-hand column.
 
@@ -29,10 +29,11 @@ disk and does not fetch or execute a mutable remote script.
 ## Common commands
 
 ```powershell
-cicada --team "coder,reviewer"
+cicada --team "engineer,reviewer"
 cicada --prompt "We are working on the MCP module"
 cicada --yolo
 cicada --autopilot
+cicada --icebreaker
 cicada --resume
 cicada --continue
 cicada --clear
@@ -58,6 +59,12 @@ cicada --update
 - enables Copilot autopilot continuation mode
 - also turns on `--yolo`
 - use this when you want agents to keep driving forward on their own
+
+### `--icebreaker`
+
+- injects a random warm-up prompt into every agent's startup context
+- keeps the same prompt when you relaunch with `--resume` / `--continue`
+- useful for kicking off collaboration with a quick alignment ritual
 
 ## Resume behavior
 

@@ -10,11 +10,11 @@ Invoke-Cicada.ps1    # Core launcher — flag parsing, WT layout, pane orchestra
 Start-Agent.ps1      # Per-pane agent wrapper — role config, Copilot invocation
 Watch-Sessions.ps1   # Live monitor sidebar — reads session DB and state files
 Install-Cicada.ps1   # Local installer — module copy, pip install, profile setup
-roles.json           # Agent role definitions (coder, reviewer, tester, researcher)
+roles.json           # Agent role definitions (pm, engineer, reviewer, tester, researcher)
 cicada_mcp/          # Python MCP server package
-  __main__.py        #   CLI entry (serve, init, bind-session)
+  __main__.py        #   CLI entry (serve, init, bind-session, check-pending)
   server.py          #   FastMCP tool definitions
-  db.py              #   SQLite schema and query layer
+  db.py              #   SQLite schema and query layer (teams, agents, messages, tasks, task_events)
 pyproject.toml       # Python package metadata for cicada-mcp
 ```
 
@@ -25,8 +25,11 @@ Cicada stores runtime state in a few locations. Useful to know when debugging:
 - `~/.copilot/cicada-state.json` — team and session metadata for the last launch
 - `~/.copilot/session-state/` — Copilot CLI session directories
 - `~/.copilot/session-store.db` — session history used by the monitor
-- `~/.cicada/cicada.db` — MCP SQLite database (messages, tasks, team state)
+- `~/.cicada/cicada.db` — MCP SQLite database (messages, tasks, task_events, team state)
 - `~/.cicada/mcp-config-*.json` — per-agent MCP server configuration
+- `~/.cicada/agent-*.json` — per-agent launch configuration (cleaned up on start)
+- `~/.cicada/prompt-*.txt` — per-agent prompt files (cleaned up on start)
+- `~/.cicada/venv/` — Python virtual environment for cicada-mcp
 
 Use `cicada --clear` to wipe state and start fresh.
 
